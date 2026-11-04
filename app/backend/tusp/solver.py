@@ -17,7 +17,8 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-LNS_OPERATORS = ("random", "time", "related", "dual", "rejected")
+LNS_OPERATORS = ("random", "time", "related", "dual", "rejected", "bottleneck")
+LNS_REPAIRS = ("greedy", "regret", "dive", "dive_mip")
 
 
 class SolverParams(BaseModel):
@@ -43,16 +44,24 @@ class SolverParams(BaseModel):
     lns_root_time_frac: float = Field(0.3, gt=0, le=1)
     lns_cg_gap: float = Field(0.001, ge=0, le=1)
     lns_bound_pruning: bool = True
-    lns_operators: list[Literal["random", "time", "related", "dual", "rejected"]] = Field(
+    lns_operators: list[Literal["random", "time", "related", "dual", "rejected", "bottleneck"]] = Field(
         default_factory=lambda: list(LNS_OPERATORS))
+    lns_repairs: list[Literal["greedy", "regret", "dive", "dive_mip"]] = Field(
+        default_factory=lambda: list(LNS_REPAIRS))
+    lns_accept: Literal["sa", "improve"] = "sa"
+    lns_sa_start: float = Field(0.02, gt=0, le=1)
+    lns_sa_end: float = Field(0.0005, gt=0, le=1)
+    lns_segment: int = Field(10, ge=1, le=10000)
+    lns_reaction: float = Field(0.3, gt=0, le=1)
+    lns_iter_time_frac: float = Field(0.03, gt=0, le=1)
     lns_max_iter: int = Field(0, ge=0)
     seed: int = Field(1, ge=0)
 
-    @field_validator("lns_operators")
+    @field_validator("lns_operators", "lns_repairs")
     @classmethod
     def _some_operator(cls, v):
         if not v:
-            raise ValueError("choose at least one LNS operator")
+            raise ValueError("choose at least one LNS destroy and repair operator")
         return v
 
     @field_validator("cg_gaps")
@@ -86,8 +95,11 @@ class SolverParams(BaseModel):
                 "--lns-frac", repr(self.lns_init_frac), "--lns-max-frac", repr(self.lns_max_frac),
                 "--lns-mip-time", repr(self.lns_mip_time_s), "--lns-root-mip-time", repr(self.lns_root_mip_time_s),
                 "--lns-root-frac", repr(self.lns_root_time_frac), "--lns-cg-gap", repr(self.lns_cg_gap),
-                "--lns-ops", ",".join(self.lns_operators), "--lns-max-iter", str(self.lns_max_iter),
-                "--seed", str(self.seed),
+                "--lns-ops", ",".join(self.lns_operators), "--lns-repairs", ",".join(self.lns_repairs),
+                "--lns-accept", self.lns_accept, "--lns-sa-start", repr(self.lns_sa_start),
+                "--lns-sa-end", repr(self.lns_sa_end), "--lns-segment", str(self.lns_segment),
+                "--lns-reaction", repr(self.lns_reaction), "--lns-iter-frac", repr(self.lns_iter_time_frac),
+                "--lns-max-iter", str(self.lns_max_iter), "--seed", str(self.seed),
             ]
             if not self.lns_bound_pruning:
                 args.append("--lns-no-prune")

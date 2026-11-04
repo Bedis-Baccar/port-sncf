@@ -34,11 +34,18 @@ void print_usage(const std::string& program_name) {
     std::cout << "\nParametres LNS (--method lns) :\n";
     std::cout << "      --lns-frac f          Part initiale des trains liberes par voisinage (Defaut : 0.3)\n";
     std::cout << "      --lns-max-frac f      Part maximale avant redemarrage (Defaut : 0.7)\n";
-    std::cout << "      --lns-mip-time s      Temps du MIP de finition, 0 = sans (Defaut : 5)\n";
+    std::cout << "      --lns-mip-time s      Temps du MIP de la reparation dive_mip (Defaut : 5)\n";
     std::cout << "      --lns-cg-gap g        Gap de CG dans un voisinage (Defaut : 0.001)\n";
     std::cout << "      --lns-root-mip-time s Temps du MIP sur les colonnes racine (Defaut : 10)\n";
     std::cout << "      --lns-root-frac f     Part du temps pour la CG racine (Defaut : 0.3)\n";
-    std::cout << "      --lns-ops a,b,...     Operateurs : random,time,related,dual,rejected (Defaut : tous)\n";
+    std::cout << "      --lns-ops a,b,...     Destruction : random,time,related,dual,rejected,bottleneck (Defaut : tous)\n";
+    std::cout << "      --lns-repairs a,...   Reparation : greedy,regret,dive,dive_mip (Defaut : tous)\n";
+    std::cout << "      --lns-accept sa|improve  Recuit simule (Defaut) ou ameliorations seulement\n";
+    std::cout << "      --lns-sa-start p      Degradation relative acceptee a 50 %% au debut (Defaut : 0.02)\n";
+    std::cout << "      --lns-sa-end p        ... et a la fin (Defaut : 0.0005)\n";
+    std::cout << "      --lns-segment n       Mise a jour des poids tous les n iterations (Defaut : 10)\n";
+    std::cout << "      --lns-reaction r      Facteur de reaction des poids (Defaut : 0.3)\n";
+    std::cout << "      --lns-iter-frac f     Budget de temps d'une iteration, part du temps limite (Defaut : 0.03)\n";
     std::cout << "      --lns-no-prune        N'utilise pas la borne pour elaguer les voisinages\n";
     std::cout << "      --lns-max-iter n      Nombre max d'iterations, 0 = jusqu'au temps limite\n";
     std::cout << "      --seed n              Graine aleatoire (Defaut : 1)\n";
@@ -128,11 +135,30 @@ int main(int argc, char** argv) {
                 std::stringstream ss(need_value(i, arg));
                 std::string op;
                 while (std::getline(ss, op, ',')) {
-                    if (op != "random" && op != "time" && op != "related" && op != "dual" && op != "rejected")
+                    if (op != "random" && op != "time" && op != "related" && op != "dual" && op != "rejected" && op != "bottleneck")
                         throw std::invalid_argument("operateur LNS inconnu : " + op);
                     params.lns_operators.push_back(op);
                 }
             }
+            else if (arg == "--lns-repairs") {
+                params.lns_repairs.clear();
+                std::stringstream ss(need_value(i, arg));
+                std::string op;
+                while (std::getline(ss, op, ',')) {
+                    if (op != "greedy" && op != "regret" && op != "dive" && op != "dive_mip")
+                        throw std::invalid_argument("reparation LNS inconnue : " + op);
+                    params.lns_repairs.push_back(op);
+                }
+            }
+            else if (arg == "--lns-accept") {
+                params.lns_accept = need_value(i, arg);
+                if (params.lns_accept != "sa" && params.lns_accept != "improve") throw std::invalid_argument("--lns-accept : sa | improve");
+            }
+            else if (arg == "--lns-sa-start") params.lns_sa_start = std::stod(need_value(i, arg));
+            else if (arg == "--lns-sa-end") params.lns_sa_end = std::stod(need_value(i, arg));
+            else if (arg == "--lns-segment") params.lns_segment = std::stoi(need_value(i, arg));
+            else if (arg == "--lns-reaction") params.lns_reaction = std::stod(need_value(i, arg));
+            else if (arg == "--lns-iter-frac") params.lns_iter_time_frac = std::stod(need_value(i, arg));
             else throw std::invalid_argument("Argument inconnu : " + arg);
         }
     } catch (const std::exception& e) {

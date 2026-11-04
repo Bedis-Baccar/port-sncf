@@ -42,14 +42,21 @@ struct SolverParams {
     // ---- LNS (method = "lns") ---------------------------------------------------
     double lns_init_frac = 0.3;      // initial share of trains freed in a neighbourhood
     double lns_max_frac = 0.7;       // the share grows up to this value, then restarts (diversification)
-    double lns_mip_time_s = 5.0;     // time limit of the optional MIP polish of a neighbourhood (0 = off)
+    double lns_mip_time_s = 5.0;     // time limit of the MIP of the dive_mip repair (0 = no MIP)
     double lns_cg_gap = 0.001;       // CG termination gap inside a neighbourhood
     double lns_root_mip_time_s = 10.0; // time limit of the MIP on the root columns
     double lns_root_time_frac = 0.3;   // share of the time limit the root column generation may use
     int lns_seed = 1;
     bool lns_bound_pruning = true;   // skip the MIP when the neighbourhood's Lagrangian bound >= UB - 1
     int lns_max_iter = 0;            // 0 = until the time limit
-    std::vector<std::string> lns_operators = {"random", "time", "related", "dual", "rejected"};
+    std::vector<std::string> lns_operators = {"random", "time", "related", "dual", "rejected", "bottleneck"};
+    std::vector<std::string> lns_repairs = {"greedy", "regret", "dive", "dive_mip"};
+    std::string lns_accept = "sa";   // "sa" (simulated annealing) or "improve" (improvements only)
+    double lns_sa_start = 0.02;      // a solution 2 % worse is accepted with prob. 1/2 at the start...
+    double lns_sa_end = 0.0005;      // ...and 0.05 % worse at the end (geometric cooling over the time budget)
+    int lns_segment = 10;            // operator weights are updated every `lns_segment` iterations
+    double lns_reaction = 0.3;       // weight update: w <- (1 - r) w + r * normalised performance
+    double lns_iter_time_frac = 0.03; // time budget of one iteration (share of the limit, >= 1 s)
 
     std::string out_dir;             // where solution.json / trace.jsonl / dynamics.csv go
     bool trace = true;               // write trace.jsonl (event stream for the web app)

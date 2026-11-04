@@ -305,7 +305,11 @@ export default function ComparePage({ health, station, scenario }: { health: Hea
 function paramsSummary(r: RunInfo): string {
   const p = r.params;
   if (!p) return r.kind === "legacy" ? "old solver" : "—";
-  if (p.method === "lns") return `share ${p.lns_init_frac}→${p.lns_max_frac} · MIP ${p.lns_mip_time_s}s · ${p.lns_bound_pruning ? "bound pruning" : "no pruning"} · ops ${p.lns_operators.length}`;
+  if (p.method === "lns") {
+    const accept = p.lns_accept === "improve" ? "improve only" : "SA";
+    const repairs = p.lns_repairs ? ` · repairs ${p.lns_repairs.join("/")}` : "";
+    return `${p.lns_repairs ? "ALNS" : "LNS"} ${p.lns_repairs ? accept : ""} · share ${p.lns_init_frac}→${p.lns_max_frac}${repairs} · ${p.lns_bound_pruning ? "bound pruning" : "no pruning"} · seed ${p.seed}`;
+  }
   return `gaps ${p.cg_gaps.join("/")} · heur/${p.heuristic_every} · ${p.branching} · ${p.search}`;
 }
 

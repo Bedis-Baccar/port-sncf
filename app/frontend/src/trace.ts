@@ -49,12 +49,22 @@ export interface LnsIteration {
   frac: number;
   lp: number | null;
   lb: number | null;
-  result: string;   // improved | no_improvement | pruned | dive_cut | mip_timeout
-  value: number | null;
+  // ALNS: new_best | improved | accepted | rejected | same | pruned | failed
+  // (first LNS version: improved | no_improvement | pruned | dive_cut | mip_timeout)
+  result: string;
+  value: number | null;      // cost of the repaired candidate
   ub: number | null;
   cg_it: number;
   dive_steps: number;
   weights: Record<string, number>;
+  // ALNS only
+  rep: string | null;        // repair operator
+  cur: number | null;        // current solution after the iteration
+  temp: number | null;       // SA temperature
+  thr: number | null;        // acceptance threshold
+  rows: number;
+  cols: number;
+  rweights: Record<string, number>;
 }
 
 export interface Incumbent {
@@ -127,6 +137,13 @@ export function ingest(m: TraceModel, events: TraceEvent[]): TraceModel {
           cg_it: (e.cg_it as number) ?? 0,
           dive_steps: (e.dive_steps as number) ?? 0,
           weights: (e.weights as Record<string, number>) ?? {},
+          rep: e.rep != null ? String(e.rep) : null,
+          cur: num(e.cur),
+          temp: num(e.temp),
+          thr: num(e.thr),
+          rows: (e.rows as number) ?? 0,
+          cols: (e.cols as number) ?? 0,
+          rweights: (e.rweights as Record<string, number>) ?? {},
         });
         break;
       case "end":
@@ -255,15 +272,37 @@ export function sourceLabel(src: string): string {
   if (src.startsWith("greedy")) return `greedy insertion (${src.split(":")[1] ?? "pricing"})`;
   if (src.startsWith("lns:")) {
     const [op, how] = src.slice(4).split("+");
-    return `LNS ${op} → ${how === "greedy" ? "greedy repair" : how === "mip" ? "MIP polish" : "price-and-dive"}`;
+    const repair: Record<string, string> = {
+      greedy: "greedy repair", regret: "regret insertion", mip: "MIP polish", dive: "price-and-dive", dive_mip: "dive + MIP",
+    };
+    return `LNS ${op} → ${repair[how ?? "dive"] ?? how}`;
   }
   return src;
 }
 
 export const LNS_RESULT_COLOR: Record<string, string> = {
-  improved: "#22c55e",
+  new_best: "#22c55e",
+  improved: "#84cc16",
+  accepted: "#f59e0b",
+  rejected: "#475569",
+  same: "#334155",
+  pruned: "#a855f7",
+  failed: "#ef4444",
+  // first LNS version
   no_improvement: "#64748b",
   dive_cut: "#3b82f6",
-  pruned: "#a855f7",
   mip_timeout: "#f59e0b",
+};
+
+export const LNS_RESULT_LABEL: Record<string, string> = {
+  new_best: "new best solution",
+  improved: "better than current",
+  accepted: "worse, accepted (SA)",
+  rejected: "rejected",
+  same: "same solution",
+  pruned: "pruned by its bound",
+  failed: "no solution (budget / dive)",
+  no_improvement: "repaired, no improvement",
+  dive_cut: "dive cut by its bound",
+  mip_timeout: "MIP polish timed out",
 };

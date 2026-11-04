@@ -26,6 +26,21 @@ def test_lns_flags():
     assert "--lns-no-prune" in args
 
 
+def test_alns_flags():
+    p = SolverParams(method="lns", lns_repairs=["greedy", "dive_mip"], lns_accept="improve",
+                     lns_operators=["bottleneck"], lns_segment=20)
+    args = p.to_args()
+    get = lambda f: args[args.index(f) + 1]
+    assert get("--lns-repairs") == "greedy,dive_mip"
+    assert get("--lns-accept") == "improve"
+    assert get("--lns-ops") == "bottleneck"
+    assert get("--lns-segment") == "20"
+    with pytest.raises(ValidationError):
+        SolverParams(method="lns", lns_repairs=[])
+    with pytest.raises(ValidationError):
+        SolverParams(method="lns", lns_accept="always")
+
+
 def test_invalid_lns_settings_rejected():
     with pytest.raises(ValidationError):
         SolverParams(method="lns", lns_operators=[])

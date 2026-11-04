@@ -147,13 +147,21 @@ export interface LpSolution {
   fractional_trains: number[];
 }
 
-export type LnsOperator = "random" | "time" | "related" | "dual" | "rejected";
+export type LnsOperator = "random" | "time" | "related" | "dual" | "rejected" | "bottleneck";
+export type LnsRepair = "greedy" | "regret" | "dive" | "dive_mip";
+export const LNS_REPAIRS: { id: LnsRepair; label: string; hint: string }[] = [
+  { id: "greedy", label: "greedy", hint: "insertion through the pricing, refused trains first (milliseconds)" },
+  { id: "regret", label: "regret", hint: "insert first the train whose refusal would cost the most (milliseconds)" },
+  { id: "dive", label: "price-and-dive", hint: "column generation on a reduced sub-master + diving, pruned by its bound" },
+  { id: "dive_mip", label: "dive + MIP", hint: "price-and-dive, then a MIP on the neighbourhood's columns (seconds)" },
+];
 export const LNS_OPERATORS: { id: LnsOperator; label: string; hint: string }[] = [
   { id: "random", label: "random", hint: "k random trains" },
   { id: "time", label: "time window", hint: "trains present at the same time as a seed train" },
   { id: "related", label: "related", hint: "trains sharing tracks with a seed train at the same time" },
   { id: "dual", label: "dual-guided", hint: "trains whose path the LP relaxation disagrees with most (high reduced cost)" },
   { id: "rejected", label: "refused", hint: "refused trains + the trains competing with them" },
+  { id: "bottleneck", label: "bottleneck", hint: "trains on the track the root LP prices as most contested (most negative conflict dual)" },
 ];
 
 export interface SolverParams {
@@ -177,6 +185,13 @@ export interface SolverParams {
   lns_cg_gap: number;
   lns_bound_pruning: boolean;
   lns_operators: LnsOperator[];
+  lns_repairs: LnsRepair[];
+  lns_accept: "sa" | "improve";
+  lns_sa_start: number;
+  lns_sa_end: number;
+  lns_segment: number;
+  lns_reaction: number;
+  lns_iter_time_frac: number;
   lns_max_iter: number;
   seed: number;
 }
@@ -201,7 +216,14 @@ export const DEFAULT_PARAMS: SolverParams = {
   lns_root_time_frac: 0.3,
   lns_cg_gap: 0.001,
   lns_bound_pruning: true,
-  lns_operators: ["random", "time", "related", "dual", "rejected"],
+  lns_operators: ["random", "time", "related", "dual", "rejected", "bottleneck"],
+  lns_repairs: ["greedy", "regret", "dive", "dive_mip"],
+  lns_accept: "sa",
+  lns_sa_start: 0.02,
+  lns_sa_end: 0.0005,
+  lns_segment: 10,
+  lns_reaction: 0.3,
+  lns_iter_time_frac: 0.03,
   lns_max_iter: 0,
   seed: 1,
 };

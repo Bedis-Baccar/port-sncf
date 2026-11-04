@@ -4,7 +4,6 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
-#include <map>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -12,6 +11,7 @@
 #include "Interrupt.h"
 #include "SolutionWriter.h"
 
+// ============================================================== setup, pool ==
 LnsSolver::LnsSolver(const TimeSpaceGraph& graph, const std::vector<Train>& trains, const SolverParams& params)
     : graph_(graph),
       trains_(trains),
@@ -20,197 +20,118 @@ LnsSolver::LnsSolver(const TimeSpaceGraph& graph, const std::vector<Train>& trai
               (params.out_dir.empty() ? std::string("..") : params.out_dir) + "/gurobi_log.txt"),
       pricing_(graph, trains),
       cols_by_train_(trains.size()),
-      incumbent_(trains.size()),
+      best_(trains.size()),
+      cur_(trains.size()),
       path_rc_(trains.size(), 0.0),
       visited_nodes_(trains.size()),
+      cur_cells_(trains.size()),
       rng_(static_cast<unsigned>(params.lns_seed)) {
     start_ = std::chrono::steady_clock::now();
-    // One dummy column ("refused train") per train: the master is always feasible.
+    slots_ = graph.get_horizon() / graph.get_time_step() + 1;
+    // One refusal ("dummy") column per train, always first in cols_by_train_[k].
     for (size_t k = 0; k < trains_.size(); ++k) {
         int a = graph_.get_dummy_arc_id(k);
         Column dummy(static_cast<int>(k), {a}, std::vector<bool>(graph_.get_nb_services(), true),
                      graph_.get_arc(a).get_cost(k), static_cast<int>(k));
         add_column(dummy);
     }
-    for (const std::string& name : params_.lns_operators) {
-        ops_.push_back(Operator{name});
-    }
-    if (ops_.empty()) ops_.push_back(Operator{"random"});
+    for (const std::string& name : params_.lns_operators) dops_.push_back(Operator{name});
+    if (dops_.empty()) dops_.push_back(Operator{"random"});
+    for (const std::string& name : params_.lns_repairs) rops_.push_back(Operator{name});
+    if (rops_.empty()) rops_.push_back(Operator{"dive"});
 }
 
 double LnsSolver::elapsed() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
 }
-
 bool LnsSolver::time_up() const { return elapsed() >= params_.time_limit_s; }
 
 int LnsSolver::add_column(Column& col) {
     std::vector<int> key = col.arc_ids;
     key.push_back(-1 - col.train_id);
     auto it = column_index_.find(key);
-    if (it != column_index_.end()) return it->second;   // already in the pool
+    if (it != column_index_.end()) return it->second;
     int id = pool_.add_column(col);
     column_index_[key] = id;
-    master_.add_column(col, graph_);
+    if (master_open_) master_.add_column(col, graph_);
     cols_by_train_[col.train_id].push_back(id);
-    enabled_.push_back(1);
     return id;
 }
 
-void LnsSolver::set_free(const std::vector<char>& free, const std::vector<int>* forced) {
-    std::vector<char> in_incumbent(pool_.size(), 0);
-    for (const auto& cols : incumbent_)
-        for (int c : cols) in_incumbent[c] = 1;
-    std::vector<int> to_enable, to_disable;
-    for (size_t k = 0; k < trains_.size(); ++k) {
-        const int f = forced ? (*forced)[k] : -1;
-        for (int c : cols_by_train_[k]) {
-            char want = f >= 0 ? (c == f) : free[k] ? 1 : in_incumbent[c];
-            if (want != enabled_[c]) {
-                (want ? to_enable : to_disable).push_back(c);
-                enabled_[c] = want;
-            }
-        }
-    }
-    master_.enable_columns(to_enable);
-    master_.disable_columns(to_disable);
+std::vector<int> LnsSolver::cells_of(int column) const {
+    std::vector<int> cells;
+    for (int a : pool_.get_column(column).arc_ids)
+        for (const auto& [r, t] : graph_.get_arc(a).get_iNodes()) cells.push_back(r * slots_ + t / graph_.get_time_step());
+    return cells;
 }
 
-LnsSolver::CgResult LnsSolver::column_generation(const std::vector<char>* free, double gap, const char* ctx,
-                                                 int ctx_id, double prune_at) {
+double LnsSolver::solution_cost(const std::vector<int>& columns) const {
+    double v = 0;
+    for (int c : columns) v += pool_.get_column(c).cost;
+    return v;
+}
+
+std::vector<int> LnsSolver::flatten(const std::vector<std::vector<int>>& per_train) const {
+    std::vector<int> out;
+    for (const auto& v : per_train) out.insert(out.end(), v.begin(), v.end());
+    return out;
+}
+
+uint64_t LnsSolver::solution_hash(const std::vector<int>& columns) const {
+    std::vector<int> s = columns;
+    std::sort(s.begin(), s.end());
+    uint64_t h = 1469598103934665603ULL;   // FNV-1a
+    for (int c : s) { h ^= static_cast<uint64_t>(c) + 0x9e3779b97f4a7c15ULL; h *= 1099511628211ULL; }
+    return h;
+}
+
+bool LnsSolver::refused(int train) const {
+    return cur_[train].size() == 1 && cur_[train][0] == cols_by_train_[train][0];
+}
+
+// ===================================================================== root ==
+LnsSolver::CgResult LnsSolver::root_column_generation(double gap) {
     CgResult r;
-    const int max_iterations = 400;
-    // Degenerate restricted masters can add columns for a long time without moving the
-    // RMP value: stop when it has not improved for `stall_window` iterations (the
-    // Lagrangian bound computed so far remains valid).
-    const int stall_window = (free == nullptr) ? 60 : 25;
+    const int max_iterations = 400, stall_window = 60;
     double best_rmp = INF;
     int last_improvement = 0;
     for (int it = 0; it < max_iterations; ++it) {
-        if (tusp::stop_requested() || time_up()) {
-            r.interrupted = true;
-            return r;
-        }
+        if (tusp::stop_requested() || time_up()) { r.interrupted = true; return r; }
         auto t0 = std::chrono::steady_clock::now();
         master_.solve();
-        if (master_.is_interrupted()) {
-            tusp::request_stop();
-            r.interrupted = true;
-            return r;
-        }
-        if (master_.is_infeasible()) {   // cannot happen with dummy columns; be safe in dives
-            r.infeasible = true;
-            return r;
-        }
-        if (!master_.is_optimal()) {
-            throw std::runtime_error("LNS: restricted master not optimal (Gurobi status " +
-                                     std::to_string(master_.get_gurobi_status()) + ")");
-        }
+        if (master_.is_interrupted()) { tusp::request_stop(); r.interrupted = true; return r; }
+        if (!master_.is_optimal())
+            throw std::runtime_error("LNS root: master not optimal (status " + std::to_string(master_.get_gurobi_status()) + ")");
         const double rmp = master_.get_objective_value();
-        const std::vector<double> pi = master_.get_flow_duals();
-        const std::vector<std::vector<double>> alpha = master_.get_service_duals();
-        const std::vector<std::vector<double>> mu = master_.get_conflict_duals();
+        root_pi_ = master_.get_flow_duals();
+        root_alpha_ = master_.get_service_duals();
+        root_mu_ = master_.get_conflict_duals();
         auto t1 = std::chrono::steady_clock::now();
         time_master_ += std::chrono::duration<double>(t1 - t0).count();
-
-        auto [cols, rcs] = pricing_.solve_subset(pi, alpha, mu, nullptr, free);
+        auto [cols, rcs] = pricing_.solve_subset(root_pi_, root_alpha_, root_mu_, nullptr, nullptr);
         time_pricing_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
-
-        // Fixed trains have a single column, already in the RMP: their best reduced
-        // cost is >= 0 and contributes nothing, so this is a valid bound of the
-        // restricted problem (the full problem when free == nullptr).
         const double lagr = rmp + std::accumulate(rcs.begin(), rcs.end(), 0.0);
         r.lb = std::max(r.lb, lagr);
         r.lp = rmp;
         r.iterations = it + 1;
-        if (free == nullptr) {  // root: keep the duals for the dual-guided destroy operator
-            root_pi_ = pi;
-            root_alpha_ = alpha;
-            root_mu_ = mu;
-        }
         if (trace_.enabled()) {
             double min_rc = 0.0;
             for (double v : rcs) min_rc = std::min(min_rc, v);
-            trace_.write(JsonObj().str("ev", "cg").str("ctx", ctx).integer("node", ctx_id).integer("it", it)
+            trace_.write(JsonObj().str("ev", "cg").str("ctx", "root").integer("node", 0).integer("it", it)
                              .num("t", elapsed()).num("rmp", rmp).num("lagr", lagr)
                              .integer("added", cols.size()).integer("pool", pool_.size()).num("min_rc", min_rc));
         }
-        if (r.lb >= prune_at) {
-            r.pruned = true;
-            return r;
-        }
-        if (rmp < best_rmp - 1e-6 * std::max(1.0, std::abs(best_rmp))) {
-            best_rmp = rmp;
-            last_improvement = it;
-        }
-        // every return happens right after a solve: the master's solution stays readable
-        if (cols.empty() || std::abs(rmp - lagr) <= gap * std::max(1.0, std::abs(lagr))) {
-            return r;
-        }
-        if (it - last_improvement >= stall_window || it == max_iterations - 1) {
-            r.stalled = true;
-            return r;
-        }
+        if (rmp < best_rmp - 1e-6 * std::max(1.0, std::abs(best_rmp))) { best_rmp = rmp; last_improvement = it; }
+        if (cols.empty() || std::abs(rmp - lagr) <= gap * std::max(1.0, std::abs(lagr))) return r;
+        if (it - last_improvement >= stall_window || it == max_iterations - 1) { r.stalled = true; return r; }
         const size_t before = pool_.size();
         for (Column& c : cols) add_column(c);
-        if (pool_.size() == before) return r;   // only duplicates: nothing new to price in
+        if (pool_.size() == before) return r;
     }
     return r;
 }
 
-LnsSolver::DiveResult LnsSolver::dive_repair(std::vector<char> free, int it) {
-    DiveResult d;
-    const int n = static_cast<int>(trains_.size());
-    const double improve_below = ub_ - 1 + 1e-6;   // integer costs: improving means <= UB - 1
-    std::vector<int> forced(n, -1);
-    while (true) {
-        set_free(free, &forced);
-        CgResult cg = column_generation(&free, params_.lns_cg_gap, "lns", it,
-                                        params_.lns_bound_pruning ? improve_below : INF);
-        if (d.steps == 0) d.first = cg;
-        if (cg.interrupted) { d.interrupted = true; return d; }
-        if (cg.infeasible) return d;
-        if (cg.pruned) {                      // bound >= UB - 1: this (dive) subproblem cannot improve
-            if (d.steps == 0) d.pruned_at_root = true; else d.cut = true;
-            return d;
-        }
-        std::vector<int> active = master_.get_active_columns_ids();
-        if (master_.is_sol_integer()) {
-            double val = solution_cost(active);
-            if (val <= improve_below) { d.found = true; d.solution = active; d.value = val; }
-            return d;
-        }
-        // fix the columns that are (almost) integral; if none, the largest fractional one.
-        // Two columns >= 0.99 never conflict (conflict rows: their sum <= 1), so this
-        // keeps the restricted master feasible.
-        // A refusal ("dummy") column is never fixed by rounding a fractional value:
-        // refusing a train is the last resort and fixing it usually kills the dive.
-        std::vector<std::pair<double, int>> cand;   // (value, column) of free, non-fixed trains
-        for (int c : active) {
-            int k = pool_.get_column(c).train_id;
-            if (free[k]) cand.push_back({master_.get_column_value(c), c});
-        }
-        if (cand.empty()) return d;
-        std::sort(cand.rbegin(), cand.rend());
-        int fixed_now = 0;
-        for (auto& [v, c] : cand) {
-            int k = pool_.get_column(c).train_id;
-            if (!free[k]) continue;
-            const bool refusal = (c == cols_by_train_[k][0]);
-            if (v >= 0.99 || (fixed_now == 0 && !refusal)) {
-                forced[k] = c;
-                free[k] = 0;
-                fixed_now++;
-            }
-            if (v < 0.99 && fixed_now > 0) break;
-        }
-        if (fixed_now == 0) return d;   // only fractional refusals left: stop the dive
-        d.steps++;
-    }
-}
-
-// true when the MIP found a solution better than the cutoff
-bool LnsSolver::solve_mip(double time_limit, double cutoff, std::vector<int>& solution, double& value) {
+bool LnsSolver::root_mip(double time_limit, double cutoff, std::vector<int>& solution, double& value) {
     auto t0 = std::chrono::steady_clock::now();
     master_.convert_to_integer();
     master_.set_time_limit(std::max(0.5, time_limit));
@@ -220,8 +141,7 @@ bool LnsSolver::solve_mip(double time_limit, double cutoff, std::vector<int>& so
     bool found = !master_.is_infeasible() && master_.get_current_nb_solutions() > 0;
     if (found) {
         solution = master_.get_active_columns_ids();
-        value = 0.0;
-        for (int c : solution) value += pool_.get_column(c).cost;
+        value = solution_cost(solution);
     }
     master_.set_time_limit(GRB_INFINITY);
     master_.set_cutoff(GRB_INFINITY);
@@ -231,38 +151,41 @@ bool LnsSolver::solve_mip(double time_limit, double cutoff, std::vector<int>& so
     return found;
 }
 
-double LnsSolver::solution_cost(const std::vector<int>& columns) const {
-    double v = 0;
-    for (int c : columns) v += pool_.get_column(c).cost;
-    return v;
+// ================================================================= repairs ==
+void LnsSolver::fixed_occupation(const std::vector<char>& fixed, std::vector<char>& cells, double& cost) const {
+    cells.assign(static_cast<size_t>(graph_.get_nb_conflict_resources()) * slots_, 0);
+    cost = 0;
+    for (size_t k = 0; k < trains_.size(); ++k) {
+        if (!fixed[k]) continue;
+        for (int c : cur_[k]) {
+            cost += pool_.get_column(c).cost;
+            for (int cell : cells_of(c)) cells[cell] = 1;
+        }
+    }
 }
 
+// Inserts the trains of `order` one by one through the pricing: train k is priced with
+// pi_k = its refusal cost and mu = -BIG on cells already used, so the DP returns the
+// cheapest conflict-free path doing all its services, or nothing (refusal is cheaper).
 std::vector<int> LnsSolver::greedy_insert(const std::vector<int>& order, const std::vector<char>& fixed_mask) {
     auto t0 = std::chrono::steady_clock::now();
     const int n = static_cast<int>(trains_.size());
-    const int slots = graph_.get_horizon() / graph_.get_time_step() + 1;
-    const double BIG = 1e7;   // larger than any refusal cost: a conflicting path is never chosen
     std::vector<double> pi(n, 0.0);
     std::vector<std::vector<double>> alpha(n, std::vector<double>(graph_.get_nb_services(), 0.0));
-    std::vector<std::vector<double>> mu(graph_.get_nb_conflict_resources(), std::vector<double>(slots, 0.0));
-    auto occupy = [&](int col) {
-        for (int a : pool_.get_column(col).arc_ids)
-            for (const auto& [r, t] : graph_.get_arc(a).get_iNodes()) mu[r][t / graph_.get_time_step()] = -BIG;
-    };
+    std::vector<std::vector<double>> mu(graph_.get_nb_conflict_resources(), std::vector<double>(slots_, 0.0));
+    auto occupy = [&](int col) { for (int cell : cells_of(col)) mu[cell / slots_][cell % slots_] = -BIG; };
     for (int k = 0; k < n; ++k)
         if (fixed_mask[k])
-            for (int c : incumbent_[k]) occupy(c);
-
+            for (int c : cur_[k]) occupy(c);
     std::vector<int> result;
     std::vector<char> active(n, 0);
     for (int k : order) {
         const int dummy = cols_by_train_[k][0];
-        pi[k] = pool_.get_column(dummy).cost;    // reduced cost < 0  <=>  cheaper than refusing
+        pi[k] = pool_.get_column(dummy).cost;
         active[k] = 1;
         auto [cols, rcs] = pricing_.solve_subset(pi, alpha, mu, nullptr, &active);
         active[k] = 0;
-        int chosen = dummy;
-        if (!cols.empty()) chosen = add_column(cols[0]);
+        int chosen = cols.empty() ? dummy : add_column(cols[0]);
         occupy(chosen);
         result.push_back(chosen);
     }
@@ -270,11 +193,234 @@ std::vector<int> LnsSolver::greedy_insert(const std::vector<int>& order, const s
     return result;
 }
 
-void LnsSolver::compute_train_profiles() {
+LnsSolver::Candidate LnsSolver::repair_greedy(const std::vector<int>& freed, const std::vector<char>& fixed) {
+    Candidate c;
+    const int n = static_cast<int>(trains_.size());
+    std::vector<int> rank(n, 0);
+    for (int i = 0; i < (int)lp_accept_order_.size(); ++i) rank[lp_accept_order_[i]] = i;
+    std::vector<int> first = freed;   // refused trains first, then the LP's preference
+    std::stable_sort(first.begin(), first.end(), [&](int x, int y) {
+        if (refused(x) != refused(y)) return refused(x);
+        return rank[x] < rank[y];
+    });
+    std::vector<int> second = freed;
+    std::shuffle(second.begin(), second.end(), rng_);
+    for (const std::vector<int>& order : {first, second}) {
+        std::vector<int> sol = greedy_insert(order, fixed);
+        for (int b = 0; b < n; ++b)
+            if (fixed[b]) sol.insert(sol.end(), cur_[b].begin(), cur_[b].end());
+        double val = solution_cost(sol);
+        if (!c.found || val < c.value) { c.found = true; c.value = val; c.columns = sol; }
+    }
+    return c;
+}
+
+// Regret insertion: repeatedly insert the train whose refusal would cost the most compared
+// with its best conflict-free insertion; only the trains whose best path is hit by the
+// insertion are re-priced.
+LnsSolver::Candidate LnsSolver::repair_regret(const std::vector<int>& freed, const std::vector<char>& fixed) {
+    auto t0 = std::chrono::steady_clock::now();
+    Candidate c;
+    const int n = static_cast<int>(trains_.size());
+    std::vector<double> pi(n, 0.0);
+    std::vector<std::vector<double>> alpha(n, std::vector<double>(graph_.get_nb_services(), 0.0));
+    std::vector<std::vector<double>> mu(graph_.get_nb_conflict_resources(), std::vector<double>(slots_, 0.0));
+    std::vector<char> used(static_cast<size_t>(graph_.get_nb_conflict_resources()) * slots_, 0);
+    auto occupy = [&](int col) { for (int cell : cells_of(col)) { mu[cell / slots_][cell % slots_] = -BIG; used[cell] = 1; } };
+    for (int k = 0; k < n; ++k)
+        if (fixed[k])
+            for (int col : cur_[k]) occupy(col);
+    std::vector<char> active(n, 0);
+    auto price = [&](int k) -> int {   // best conflict-free column of k, or -1
+        pi[k] = pool_.get_column(cols_by_train_[k][0]).cost;
+        active[k] = 1;
+        auto [cols, rcs] = pricing_.solve_subset(pi, alpha, mu, nullptr, &active);
+        active[k] = 0;
+        return cols.empty() ? -1 : add_column(cols[0]);
+    };
+    std::vector<int> remaining = freed, best_col(n, -1);
+    for (int k : remaining) best_col[k] = price(k);
+    std::vector<int> sol;
+    std::uniform_real_distribution<double> U(0.0, 1e-6);
+    while (!remaining.empty()) {
+        int pick = -1;
+        double best_regret = -INF;
+        for (int k : remaining) {
+            if (best_col[k] < 0) continue;
+            double regret = pool_.get_column(cols_by_train_[k][0]).cost - pool_.get_column(best_col[k]).cost + U(rng_);
+            if (regret > best_regret) { best_regret = regret; pick = k; }
+        }
+        if (pick < 0) {   // nobody can be inserted any more: refuse the rest
+            for (int k : remaining) sol.push_back(cols_by_train_[k][0]);
+            break;
+        }
+        const int col = best_col[pick];
+        sol.push_back(col);
+        occupy(col);
+        remaining.erase(std::find(remaining.begin(), remaining.end(), pick));
+        for (int k : remaining) {
+            if (best_col[k] < 0) continue;
+            bool conflict = false;
+            for (int cell : cells_of(best_col[k]))
+                if (used[cell]) { conflict = true; break; }
+            if (conflict) best_col[k] = price(k);
+        }
+    }
+    for (int b = 0; b < n; ++b)
+        if (fixed[b]) sol.insert(sol.end(), cur_[b].begin(), cur_[b].end());
+    c.found = true;
+    c.columns = sol;
+    c.value = solution_cost(sol);
+    time_greedy_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    return c;
+}
+
+LnsSolver::CgResult LnsSolver::sub_column_generation(SubMaster& sm, std::vector<char>& priced, double fixed_cost,
+                                                     double prune_at, int it) {
+    CgResult r;
+    const int max_iterations = 300, stall_window = 25;
+    double best_rmp = INF;
+    int last_improvement = 0;
+    std::vector<double> pi;
+    std::vector<std::vector<double>> alpha, mu;
+    for (int cg = 0; cg < max_iterations; ++cg) {
+        if (tusp::stop_requested() || time_up()) { r.interrupted = true; return r; }
+        if (cg > 0 && elapsed() >= iter_deadline_) { r.stalled = true; r.over_budget = true; return r; }
+        auto t0 = std::chrono::steady_clock::now();
+        sm.solve();
+        if (sm.interrupted()) { tusp::request_stop(); r.interrupted = true; return r; }
+        if (sm.infeasible()) { r.infeasible = true; return r; }
+        if (!sm.optimal()) throw std::runtime_error("LNS: sub-master not optimal (status " + std::to_string(sm.status()) + ")");
+        const double rmp = fixed_cost + sm.objective();
+        sm.duals(pi, alpha, mu, BIG);
+        auto t1 = std::chrono::steady_clock::now();
+        time_master_ += std::chrono::duration<double>(t1 - t0).count();
+        auto [cols, rcs] = pricing_.solve_subset(pi, alpha, mu, nullptr, &priced);
+        time_pricing_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+        // fixed trains are constants; trains forced by the dive have one column in the
+        // sub-master (rc >= 0): the bound is valid for the restricted problem
+        const double lagr = rmp + std::accumulate(rcs.begin(), rcs.end(), 0.0);
+        r.lb = std::max(r.lb, lagr);
+        r.lp = rmp;
+        r.iterations = cg + 1;
+        if (trace_.enabled()) {
+            double min_rc = 0.0;
+            for (double v : rcs) min_rc = std::min(min_rc, v);
+            trace_.write(JsonObj().str("ev", "cg").str("ctx", "lns").integer("node", it).integer("it", cg)
+                             .num("t", elapsed()).num("rmp", rmp).num("lagr", lagr)
+                             .integer("added", cols.size()).integer("pool", pool_.size()).num("min_rc", min_rc));
+        }
+        if (r.lb >= prune_at) { r.pruned = true; return r; }
+        if (rmp < best_rmp - 1e-6 * std::max(1.0, std::abs(best_rmp))) { best_rmp = rmp; last_improvement = cg; }
+        if (cols.empty() || std::abs(rmp - lagr) <= params_.lns_cg_gap * std::max(1.0, std::abs(lagr))) return r;
+        if (cg - last_improvement >= stall_window || cg == max_iterations - 1) { r.stalled = true; return r; }
+        int added = 0;
+        for (Column& col : cols) {
+            int id = add_column(col);
+            if (!sm.has_column(id) && sm.add_column(id, pool_.get_column(id))) added++;
+        }
+        if (added == 0) return r;
+    }
+    return r;
+}
+
+// Price-and-dive on a reduced sub-master: CG pricing only the freed trains; fix the most
+// integral columns and re-price until the LP is integral. Stops as soon as the bound proves
+// that nothing better than the current solution (<= cur - 1) exists in the (dive) subproblem.
+LnsSolver::Candidate LnsSolver::repair_dive(const std::vector<int>& freed, const std::vector<char>& free, int it,
+                                            bool with_mip) {
+    Candidate c;
+    const int n = static_cast<int>(trains_.size());
+    std::vector<char> fixed(n, 1);
+    for (int b : freed) fixed[b] = 0;
+    std::vector<char> blocked;
+    double fixed_cost = 0;
+    fixed_occupation(fixed, blocked, fixed_cost);
+    SubMaster sm(master_.env(), graph_, trains_, free, blocked, params_.threads);
+    const size_t cap = 300;   // most recent columns per freed train (+ refusal + current)
+    for (int k : freed) {
+        sm.add_column(cols_by_train_[k][0], pool_.get_column(cols_by_train_[k][0]));
+        for (int col : cur_[k]) sm.add_column(col, pool_.get_column(col));
+        const auto& all = cols_by_train_[k];
+        for (size_t i = all.size(), added = 0; i-- > 1 && added < cap;)
+            if (sm.add_column(all[i], pool_.get_column(all[i]))) added++;
+    }
+    const double target = cur_cost_ - 1 + 1e-6;   // integer costs: strictly better than current
+    const double prune_at = params_.lns_bound_pruning ? target : INF;
+    std::vector<char> priced = free;
+    while (true) {
+        CgResult cg = sub_column_generation(sm, priced, fixed_cost, prune_at, it);
+        if (c.dive_steps == 0) { c.lb = cg.lb; }
+        if (cg.over_budget) c.over_budget = true;
+        c.cg_it += cg.iterations;
+        if (cg.interrupted) { c.interrupted = true; break; }
+        if (cg.infeasible) break;
+        if (cg.pruned) {
+            if (c.dive_steps == 0) c.pruned = true; else c.cut = true;
+            break;
+        }
+        if (cg.over_budget) break;   // iteration budget spent: give up this neighbourhood
+        std::vector<std::pair<int, double>> act = sm.active();
+        if (sm.integral()) {
+            std::vector<int> sol;
+            for (auto& [col, x] : act) sol.push_back(col);
+            for (int b = 0; b < n; ++b)
+                if (fixed[b]) sol.insert(sol.end(), cur_[b].begin(), cur_[b].end());
+            c.found = true;
+            c.columns = sol;
+            c.value = solution_cost(sol);
+            break;
+        }
+        // fix columns >= 0.99 (pairwise conflict-free) or else the largest fractional one,
+        // never rounding a refusal column
+        std::sort(act.begin(), act.end(), [](auto& a, auto& b) { return a.second > b.second; });
+        int fixed_now = 0;
+        for (auto& [col, x] : act) {
+            const int k = pool_.get_column(col).train_id;
+            if (!priced[k]) continue;
+            const bool refusal = (col == cols_by_train_[k][0]);
+            if (x >= 0.99 || (fixed_now == 0 && !refusal)) {
+                sm.keep_only(k, col);
+                priced[k] = 0;
+                fixed_now++;
+            }
+            if (x < 0.99 && fixed_now > 0) break;
+        }
+        if (fixed_now == 0) break;
+        c.dive_steps++;
+    }
+    if (with_mip && !c.pruned && !c.interrupted && !c.over_budget && !time_up() && params_.lns_mip_time_s > 0) {
+        // MIP polish on all the columns of the neighbourhood, cutoff: better than current
+        // and than the dive's own solution
+        auto t0 = std::chrono::steady_clock::now();
+        sm.restore_bounds();
+        double cutoff = std::min(target, c.found ? c.value - 1 + 1e-6 : INF) - fixed_cost;
+        std::vector<int> ids;
+        bool timed_out = false;
+        double tl = std::min(params_.lns_mip_time_s, std::max(0.5, params_.time_limit_s - elapsed()));
+        if (sm.solve_mip(tl, cutoff, ids, timed_out)) {
+            for (int b = 0; b < n; ++b)
+                if (fixed[b]) ids.insert(ids.end(), cur_[b].begin(), cur_[b].end());
+            double val = solution_cost(ids);
+            if (!c.found || val < c.value) { c.found = true; c.columns = ids; c.value = val; }
+        }
+        c.mip_timeout = timed_out;
+        time_mip_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+    c.rows = sm.num_rows();
+    c.cols = sm.num_cols();
+    dive_steps_ += c.dive_steps;
+    return c;
+}
+
+// =============================================================== solutions ==
+void LnsSolver::compute_profiles() {
+    const int ts = graph_.get_time_step();
     for (size_t k = 0; k < trains_.size(); ++k) {
         std::set<int> nodes;
         double rc = 0.0;
-        for (int c : incumbent_[k]) {
+        cur_cells_[k].clear();
+        for (int c : cur_[k]) {
             const Column& col = pool_.get_column(c);
             double r = col.cost;
             if (!root_pi_.empty()) {
@@ -288,8 +434,10 @@ void LnsSolver::compute_train_profiles() {
                     int p = graph_.get_node(v).getPNode();
                     if (p >= 0) nodes.insert(p);
                 }
-                if (!root_mu_.empty())
-                    for (const auto& [res, t] : arc.get_iNodes()) r -= root_mu_[res][t / graph_.get_time_step()];
+                for (const auto& [res, t] : arc.get_iNodes()) {
+                    if (!root_mu_.empty()) r -= root_mu_[res][t / ts];
+                    cur_cells_[k].push_back(res * slots_ + t / ts);
+                }
             }
             rc += r;
         }
@@ -298,16 +446,23 @@ void LnsSolver::compute_train_profiles() {
     }
 }
 
-void LnsSolver::set_incumbent(const std::vector<int>& columns, double value, const std::string& source) {
-    for (auto& v : incumbent_) v.clear();
-    for (int c : columns) incumbent_[pool_.get_column(c).train_id].push_back(c);
+void LnsSolver::set_current(const std::vector<int>& columns, double value) {
+    for (auto& v : cur_) v.clear();
+    for (int c : columns) cur_[pool_.get_column(c).train_id].push_back(c);
+    cur_cost_ = value;
+    visited_.insert(solution_hash(columns));
+    compute_profiles();
+}
+
+void LnsSolver::set_best(const std::vector<int>& columns, double value, const std::string& source) {
+    for (auto& v : best_) v.clear();
+    for (int c : columns) best_[pool_.get_column(c).train_id].push_back(c);
     ub_ = value;
     if (ttfs_ < 0) ttfs_ = elapsed();
-    compute_train_profiles();
-    int refused = 0;
+    int refused_count = 0;
     for (size_t k = 0; k < trains_.size(); ++k)
-        if (incumbent_[k].size() == 1 && pool_.get_column(incumbent_[k][0]).arc_ids.size() == 1) refused++;
-    std::cout << " * \033[32mNOUVELLE SOLUTION (" << source << ") : " << value << "\033[0m (" << refused
+        if (best_[k].size() == 1 && best_[k][0] == cols_by_train_[k][0]) refused_count++;
+    std::cout << " * \033[32mNOUVELLE SOLUTION (" << source << ") : " << value << "\033[0m (" << refused_count
               << " trains refuses)\n";
     if (trace_.enabled()) {
         trace_.write(JsonObj().str("ev", "incumbent").num("t", elapsed()).num("value", value).str("source", source)
@@ -339,6 +494,46 @@ void LnsSolver::trace_bounds(int it) const {
                      .num("t_master", time_master_).num("t_pricing", time_pricing_).num("t_heur", time_mip_));
 }
 
+// ================================================================ operators ==
+size_t LnsSolver::pick(const std::vector<Operator>& ops) {
+    double total = 0;
+    for (auto& o : ops) total += o.weight;
+    double x = std::uniform_real_distribution<double>(0.0, total)(rng_);
+    for (size_t i = 0; i + 1 < ops.size(); ++i) {
+        if (x < ops[i].weight) return i;
+        x -= ops[i].weight;
+    }
+    return ops.size() - 1;
+}
+
+// Segment update (Ropke & Pisinger): w <- (1 - rho) w + rho * normalised performance.
+// Destroy operators: mean score per use. Repair operators: score per second, because the
+// repairs differ in cost by orders of magnitude. Normalised by the mean over the operators
+// used in the segment, so weights stay O(1); operators not used keep their weight.
+void LnsSolver::end_segment() {
+    const double rho = params_.lns_reaction;
+    auto update = [&](std::vector<Operator>& ops, bool per_second) {
+        std::vector<double> perf(ops.size(), -1.0);
+        double sum = 0;
+        int used = 0;
+        for (size_t i = 0; i < ops.size(); ++i) {
+            if (!ops[i].seg_uses) continue;
+            perf[i] = per_second ? ops[i].seg_score / (ops[i].seg_time + 0.05 * ops[i].seg_uses)
+                                 : ops[i].seg_score / ops[i].seg_uses;
+            sum += perf[i];
+            used++;
+        }
+        if (used > 0 && sum > 0) {
+            const double mean = sum / used;
+            for (size_t i = 0; i < ops.size(); ++i)
+                if (perf[i] >= 0) ops[i].weight = std::max(0.1, (1 - rho) * ops[i].weight + rho * perf[i] / mean);
+        }
+        for (auto& o : ops) { o.seg_score = 0; o.seg_time = 0; o.seg_uses = 0; }
+    };
+    update(dops_, false);
+    update(rops_, true);
+}
+
 std::vector<int> LnsSolver::destroy(const std::string& op, int k) {
     const int n = static_cast<int>(trains_.size());
     std::uniform_real_distribution<double> U(0.0, 1.0);
@@ -355,14 +550,12 @@ std::vector<int> LnsSolver::destroy(const std::string& op, int k) {
     std::vector<int> chosen;
 
     if (op == "time") {
-        // trains present in the station at the same time as a random seed train
         int s = std::uniform_int_distribution<int>(0, n - 1)(rng_);
         std::vector<std::pair<double, int>> sc;
         for (int b = 0; b < n; ++b)
             sc.push_back({overlap(s, b) - 1e-3 * std::abs(trains_[b].get_a_t() - trains_[s].get_a_t()) + 1e-6 * U(rng_), b});
         chosen = top_k(sc);
     } else if (op == "related") {
-        // trains sharing physical nodes with a seed train while present at the same time
         int s = std::uniform_int_distribution<int>(0, n - 1)(rng_);
         std::vector<std::pair<double, int>> sc;
         for (int b = 0; b < n; ++b) {
@@ -373,15 +566,35 @@ std::vector<int> LnsSolver::destroy(const std::string& op, int k) {
             sc.push_back({score, b});
         }
         chosen = top_k(sc);
-    } else if (op == "dual" || op == "rejected") {
-        std::vector<int> refused;
+    } else if (op == "bottleneck" && !bottleneck_cells_.empty()) {
+        // a cell (resource, time) that the root LP prices as most contested (most negative
+        // conflict dual), chosen at random proportionally to -mu; free the trains that use
+        // the resource around that time and the trains (refused ones first) present then
+        double total = 0;
+        for (auto& [w, cell] : bottleneck_cells_) total += w;
+        double x = U(rng_) * total;
+        int cell = bottleneck_cells_.back().second;
+        for (auto& [w, cl] : bottleneck_cells_) { if (x < w) { cell = cl; break; } x -= w; }
+        const int r = cell / slots_, slot = cell % slots_, window = 6;
+        const int t = slot * graph_.get_time_step();
+        std::vector<std::pair<double, int>> sc;
+        for (int b = 0; b < n; ++b) {
+            double score = 1e-3 * U(rng_);
+            for (int c2 : cur_cells_[b])
+                if (c2 / slots_ == r && std::abs(c2 % slots_ - slot) <= window) { score += 3.0; break; }
+            const bool present = trains_[b].get_a_t() <= t && t <= trains_[b].get_d_t();
+            if (present) score += refused(b) ? 2.0 : 1.0;
+            sc.push_back({score, b});
+        }
+        chosen = top_k(sc);
+    } else if (op == "rejected" || op == "dual") {
+        std::vector<int> ref;
         for (int b = 0; b < n; ++b)
-            if (incumbent_[b].size() == 1 && pool_.get_column(incumbent_[b][0]).arc_ids.size() == 1) refused.push_back(b);
-        if (op == "rejected" && !refused.empty()) {
-            // refused trains + the trains competing with them for the same time window
-            std::shuffle(refused.begin(), refused.end(), rng_);
-            int keep = std::max(1, std::min<int>(refused.size(), k / 2));
-            chosen.assign(refused.begin(), refused.begin() + keep);
+            if (refused(b)) ref.push_back(b);
+        if (op == "rejected" && !ref.empty()) {
+            std::shuffle(ref.begin(), ref.end(), rng_);
+            int keep = std::max(1, std::min<int>(ref.size(), k / 2));
+            chosen.assign(ref.begin(), ref.begin() + keep);
             int s = chosen[0];
             std::vector<std::pair<double, int>> sc;
             for (int b = 0; b < n; ++b)
@@ -392,9 +605,7 @@ std::vector<int> LnsSolver::destroy(const std::string& op, int k) {
                 if ((int)chosen.size() >= k) break;
                 chosen.push_back(b);
             }
-        } else {
-            // dual-guided: paths that the LP relaxation disagrees with the most
-            // (large reduced cost under the root duals), randomised greedy selection
+        } else if (op == "dual") {
             std::vector<int> order(n);
             std::iota(order.begin(), order.end(), 0);
             std::sort(order.begin(), order.end(), [&](int a, int b) { return path_rc_[a] > path_rc_[b]; });
@@ -405,7 +616,7 @@ std::vector<int> LnsSolver::destroy(const std::string& op, int k) {
             }
         }
     }
-    if (chosen.empty()) {  // "random" (and fallback)
+    if (chosen.empty()) {   // "random" and fallbacks
         std::vector<int> all(n);
         std::iota(all.begin(), all.end(), 0);
         std::shuffle(all.begin(), all.end(), rng_);
@@ -414,6 +625,7 @@ std::vector<int> LnsSolver::destroy(const std::string& op, int k) {
     return chosen;
 }
 
+// =================================================================== solve ==
 SolveStatistics LnsSolver::solve(const std::string& instance_name) {
     start_ = std::chrono::steady_clock::now();
     const int n = static_cast<int>(trains_.size());
@@ -422,30 +634,34 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
     stats_.method = "lns";
     stats_.num_trains = n;
     stats_.num_arcs = graph_.get_arcs().size();
+    const bool sa = params_.lns_accept == "sa";
 
     const std::string out_dir = params_.out_dir.empty() ? std::string("../results/runs/") + instance_name : params_.out_dir;
     if (params_.trace) {
         trace_.open(out_dir + "/trace.jsonl");
-        std::string ops = "[";
-        for (size_t i = 0; i < ops_.size(); ++i) ops += (i ? ",\"" : "\"") + ops_[i].name + "\"";
-        ops += "]";
+        auto list = [](const std::vector<Operator>& ops) {
+            std::string s = "[";
+            for (size_t i = 0; i < ops.size(); ++i) s += (i ? ",\"" : "\"") + ops[i].name + "\"";
+            return s + "]";
+        };
         trace_.write(JsonObj().str("ev", "start").str("instance", instance_name).str("method", "lns")
             .integer("trains", n).integer("arcs", graph_.get_arcs().size())
             .integer("T", graph_.get_horizon()).integer("t_s", graph_.get_time_step())
             .raw("params", JsonObj().num("time_limit_s", params_.time_limit_s).str("method", "lns")
                 .boolean("link_conflicts", params_.link_conflicts).num("root_cg_gap", params_.cg_gaps[0])
                 .num("lns_init_frac", params_.lns_init_frac).num("lns_max_frac", params_.lns_max_frac)
-                .num("lns_mip_time_s", params_.lns_mip_time_s)
-                .num("lns_cg_gap", params_.lns_cg_gap).num("lns_root_mip_time_s", params_.lns_root_mip_time_s)
-                .num("lns_root_time_frac", params_.lns_root_time_frac)
+                .num("lns_mip_time_s", params_.lns_mip_time_s).num("lns_cg_gap", params_.lns_cg_gap)
+                .num("lns_root_mip_time_s", params_.lns_root_mip_time_s).num("lns_root_time_frac", params_.lns_root_time_frac)
                 .integer("lns_seed", params_.lns_seed).boolean("lns_bound_pruning", params_.lns_bound_pruning)
-                .integer("lns_max_iter", params_.lns_max_iter).raw("lns_operators", ops)
+                .integer("lns_max_iter", params_.lns_max_iter).raw("lns_operators", list(dops_)).raw("lns_repairs", list(rops_))
+                .str("lns_accept", params_.lns_accept).num("lns_sa_start", params_.lns_sa_start).num("lns_sa_end", params_.lns_sa_end)
+                .integer("lns_segment", params_.lns_segment).num("lns_reaction", params_.lns_reaction)
+                .num("lns_iter_time_frac", params_.lns_iter_time_frac)
                 .integer("threads", params_.threads).dump()));
     }
+    std::cout << "\n=== ALNS : " << instance_name << " (" << n << " trains) ===\n";
 
-    std::cout << "\n=== LNS : " << instance_name << " (" << n << " trains) ===\n";
-
-    // ---------------- first solution: multi-start greedy insertion through the pricing ----------------
+    // ---------------- first solution: multi-start greedy insertion through the pricing --------
     {
         std::vector<int> base(n);
         std::iota(base.begin(), base.end(), 0);
@@ -465,40 +681,35 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
             std::shuffle(o.begin(), o.end(), rng_);
             orders.push_back({"random", o});
         }
-        const double greedy_budget = std::max(0.5, 0.05 * params_.time_limit_s);
+        const double budget = std::max(0.5, 0.05 * params_.time_limit_s);
         for (auto& [name, order] : orders) {
-            if (elapsed() > greedy_budget && ub_ < INF) break;
+            if (elapsed() > budget && ub_ < INF) break;
             std::vector<int> sol = greedy_insert(order, std::vector<char>(n, 0));
             double val = solution_cost(sol);
-            if (val < ub_ - 0.5) set_incumbent(sol, val, "greedy:" + name);
+            if (val < ub_ - 0.5) { set_best(sol, val, "greedy:" + name); set_current(sol, val); }
         }
     }
 
-    // ---------------- root: LP bound (time-budgeted) ----------------
+    // ---------------- root: LP bound (time-budgeted) on the global master ----------------
     const double full_limit = params_.time_limit_s;
     params_.time_limit_s = std::min(full_limit, std::max(1.0, params_.lns_root_time_frac * full_limit));
-    CgResult root = column_generation(nullptr, params_.cg_gaps[0], "root", 0, INF);
+    CgResult root = root_column_generation(params_.cg_gaps[0]);
     params_.time_limit_s = full_limit;
     const bool root_complete = !root.interrupted;
     if (root.interrupted && !tusp::stop_requested()) {
-        root.interrupted = false;   // budget reached: the best Lagrangian bound is still valid
+        root.interrupted = false;
         std::cout << "Racine interrompue (budget de temps) : borne partielle valide\n";
     }
     root_lb_ = root.lb;
-    root_lp_ = root.lp;
     stats_.root_lb = root_lb_;
     std::cout << "Racine : LP " << root.lp << ", borne " << root_lb_ << " (" << root.iterations
               << " iterations de CG, " << pool_.size() << " colonnes)\n";
     if (root_complete && trace_.enabled()) {
         trace_.write(JsonObj().str("ev", "lp").integer("node", 0).num("t", elapsed()).num("value", root.lp)
                          .raw("train_paths", paths_json(master_.get_active_columns_ids(), true)));
-        trace_.write(JsonObj().str("ev", "node").integer("id", 0).integer("parent", -1).integer("depth", 0)
-                         .str("status", "FRACTIONAL").num("lb", root_lb_).str("label", "root").num("t", elapsed()));
     }
-
-    // LP-guided greedy: insert first the trains that the root LP most wants to accept
-    // (smallest flow on their "refused" column).
     if (!root.interrupted) {
+        // LP-guided greedy: insert first the trains the root LP most wants to accept
         lp_accept_order_.resize(n);
         std::iota(lp_accept_order_.begin(), lp_accept_order_.end(), 0);
         std::vector<double> refused_flow(n, 1.0);
@@ -507,28 +718,42 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
                          [&](int a, int b) { return refused_flow[a] < refused_flow[b]; });
         std::vector<int> sol = greedy_insert(lp_accept_order_, std::vector<char>(n, 0));
         double val = solution_cost(sol);
-        if (val < ub_ - 0.5) set_incumbent(sol, val, "greedy:lp-guided");
+        if (val < ub_ - 0.5) { set_best(sol, val, "greedy:lp-guided"); set_current(sol, val); }
+        // contested cells for the bottleneck operator
+        for (size_t r = 0; r < root_mu_.size(); ++r)
+            for (int sl = 0; sl < slots_; ++sl)
+                if (root_mu_[r][sl] < -1e-6) bottleneck_cells_.push_back({-root_mu_[r][sl], static_cast<int>(r) * slots_ + sl});
+        std::sort(bottleneck_cells_.rbegin(), bottleneck_cells_.rend());
+        if (bottleneck_cells_.size() > 200) bottleneck_cells_.resize(200);
     }
-
-    // MIP on the root columns (cutoff: must beat the greedy solutions)
-    if (!root.interrupted && !time_up()) {
+    if (!root.interrupted && !time_up() && params_.lns_root_mip_time_s > 0) {
         std::vector<int> sol;
         double val = 0;
-        double tl = std::min(params_.lns_root_mip_time_s, std::max(1.0, params_.time_limit_s - elapsed()));
-        if (solve_mip(tl, ub_ - 1 + 1e-6, sol, val) && val < ub_ - 0.5) set_incumbent(sol, val, "root-mip");
+        // at most 20 % of the time limit, so that short runs keep time for the ALNS loop
+        double tl = std::min({params_.lns_root_mip_time_s, std::max(1.0, 0.2 * params_.time_limit_s),
+                              std::max(1.0, params_.time_limit_s - elapsed())});
+        if (root_mip(tl, ub_ - 1 + 1e-6, sol, val) && val < ub_ - 0.5) { set_best(sol, val, "root-mip"); set_current(sol, val); }
     }
+    master_open_ = false;   // from now on the neighbourhoods use their own sub-masters
+    compute_profiles();
     trace_bounds(0);
 
-    // ---------------- LNS iterations ----------------
+    // ---------------- ALNS iterations ----------------
     const double eps = 1e-6;
     auto proven_optimal = [&]() { return ub_ <= std::ceil(root_lb_ - eps) + eps; };
     double frac = std::clamp(params_.lns_init_frac, 0.0, 1.0);
-    int it = 0, no_improve = 0, pruned_count = 0;
-    std::uniform_real_distribution<double> U(0.0, 1.0);
+    int it = 0, no_best = 0, pruned_count = 0;
     std::string status = "TIME_LIMIT";
+    // temperature, relative to the CURRENT cost: a solution p (as a fraction of the current
+    // cost) worse is accepted with probability 1/2, p decreasing geometrically from
+    // lns_sa_start to lns_sa_end along the time budget
+    const double t_loop = elapsed();
+    const double p0 = std::max(1e-9, params_.lns_sa_start), p_end = std::max(1e-9, params_.lns_sa_end);
+    std::uniform_real_distribution<double> U(1e-12, 1.0);
 
-    std::cout << std::left << std::setw(6) << "It" << std::setw(10) << "Temps" << std::setw(10) << "Op"
-              << std::setw(5) << "k" << std::setw(14) << "Borne voisin." << std::setw(12) << "UB" << "Resultat\n";
+    std::cout << std::left << std::setw(6) << "It" << std::setw(8) << "Temps" << std::setw(11) << "Destroy"
+              << std::setw(9) << "Repair" << std::setw(4) << "k" << std::setw(11) << "Borne" << std::setw(10) << "Cand."
+              << std::setw(10) << "Courante" << std::setw(10) << "Meilleure" << "Resultat\n";
 
     while (!root.interrupted) {
         if (tusp::stop_requested()) { status = "INTERRUPTED"; break; }
@@ -536,126 +761,93 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
         if (proven_optimal()) { status = "OPTIMAL"; break; }
         if (params_.lns_max_iter > 0 && it >= params_.lns_max_iter) { status = "ITERATION_LIMIT"; break; }
 
-        // roulette wheel on the adaptive weights
-        double total = 0;
-        for (auto& o : ops_) total += o.weight;
-        double pick = U(rng_) * total;
-        size_t oi = 0;
-        for (; oi + 1 < ops_.size(); ++oi) {
-            if (pick < ops_[oi].weight) break;
-            pick -= ops_[oi].weight;
-        }
-        Operator& op = ops_[oi];
+        const double progress = params_.lns_max_iter > 0
+            ? static_cast<double>(it) / params_.lns_max_iter
+            : std::clamp((elapsed() - t_loop) / std::max(1e-9, params_.time_limit_s - t_loop), 0.0, 1.0);
+        const double temperature = sa ? -(p0 * std::pow(p_end / p0, progress)) * cur_cost_ / std::log(0.5) : 0.0;
+        // acceptance threshold drawn BEFORE the repair (simulated annealing)
+        const double threshold = sa ? cur_cost_ - temperature * std::log(U(rng_)) : cur_cost_ - 1;
+        const double accept_limit = std::floor(threshold + eps);
+
+        const size_t di = pick(dops_), ri = pick(rops_);
+        Operator& dop = dops_[di];
+        Operator& rop = rops_[ri];
         const int k = std::clamp(static_cast<int>(std::lround(frac * n)), std::min(2, n), n);
-
         const double t_start = elapsed();
-        std::vector<int> freed = destroy(op.name, k);
-        std::vector<char> free(n, 0);
-        for (int b : freed) free[b] = 1;
-        set_free(free);
+        iter_deadline_ = t_start + std::max(1.0, params_.lns_iter_time_frac * params_.time_limit_s);
+        std::vector<int> freed = destroy(dop.name, k);
+        std::vector<char> free(n, 0), fixed(n, 1);
+        for (int b : freed) { free[b] = 1; fixed[b] = 0; }
 
-        // 1) fast repair: greedy re-insertion of the freed trains through the pricing.
-        //    Two orders: currently refused trains first (they pick their resources before
-        //    their competitors are re-inserted around them) then LP order; and random.
+        Candidate cand;
+        if (rop.name == "greedy") cand = repair_greedy(freed, fixed);
+        else if (rop.name == "regret") cand = repair_regret(freed, fixed);
+        else cand = repair_dive(freed, free, it, rop.name == "dive_mip");
+        if (cand.interrupted) { status = tusp::stop_requested() ? "INTERRUPTED" : "TIME_LIMIT"; break; }
+
         std::string result;
-        double new_value = NAN;
-        bool greedy_improved = false;
-        {
-            std::vector<char> fixed(n, 1);
-            for (int b : freed) fixed[b] = 0;
-            std::vector<int> rank(n, 0);
-            for (int i = 0; i < (int)lp_accept_order_.size(); ++i) rank[lp_accept_order_[i]] = i;
-            auto refused = [&](int b) {
-                return incumbent_[b].size() == 1 && incumbent_[b][0] == cols_by_train_[b][0];
-            };
-            std::vector<int> first = freed;
-            std::stable_sort(first.begin(), first.end(), [&](int x, int y) {
-                if (refused(x) != refused(y)) return refused(x);
-                return rank[x] < rank[y];
-            });
-            std::vector<int> second = freed;
-            std::shuffle(second.begin(), second.end(), rng_);
-            std::vector<int> best_sol;
-            double best_val = ub_;
-            for (const std::vector<int>& order : {first, second}) {
-                std::vector<int> sol = greedy_insert(order, fixed);
-                for (int b = 0; b < n; ++b)
-                    if (fixed[b]) sol.insert(sol.end(), incumbent_[b].begin(), incumbent_[b].end());
-                double val = solution_cost(sol);
-                if (val < best_val - 0.5) { best_val = val; best_sol = sol; }
-            }
-            if (!best_sol.empty()) {
-                set_incumbent(best_sol, best_val, "lns:" + op.name + "+greedy");
-                greedy_improved = true;
-                greedy_improvements_++;
-                new_value = best_val;
-            }
-        }
-
-        // 2) price-and-dive on the neighbourhood: CG (pricing the freed trains only), stop as
-        //    soon as the Lagrangian bound proves the (dive) subproblem cannot beat UB - 1,
-        //    otherwise fix the most integral columns and re-price, until the LP is integral.
-        op.tries++;
-        DiveResult dive = dive_repair(free, it);
-        if (dive.interrupted) { status = tusp::stop_requested() ? "INTERRUPTED" : "TIME_LIMIT"; break; }
-        const CgResult& cg = dive.first;
-        if (dive.found) {
-            new_value = dive.value;
-            set_incumbent(dive.solution, dive.value, "lns:" + op.name);
-            result = "improved";
-        } else if (dive.pruned_at_root) {
-            result = "pruned";
-            op.pruned++;
-            pruned_count++;
-        } else if (params_.lns_mip_time_s > 0 && !time_up()) {
-            // 3) optional polish: MIP on the neighbourhood's columns, cutoff UB - 1
-            set_free(free);
-            std::vector<int> sol;
-            double val = 0;
-            double tl = std::min(params_.lns_mip_time_s, std::max(0.5, params_.time_limit_s - elapsed()));
-            bool found = solve_mip(tl, ub_ - 1 + eps, sol, val);
-            if (found && val <= ub_ - 1 + eps) {
-                new_value = val;
-                set_incumbent(sol, val, "lns:" + op.name + "+mip");
-                result = "improved";
-            } else {
-                result = master_.get_gurobi_status() == GRB_TIME_LIMIT ? "mip_timeout" : (dive.cut ? "dive_cut" : "no_improvement");
-            }
+        double score = 0;
+        const double before = cur_cost_;
+        if (cand.pruned) result = "pruned";
+        else if (!cand.found) result = "failed";
+        else if (solution_hash(cand.columns) == solution_hash(flatten(cur_))) result = "same";
+        else if (cand.value < ub_ - 0.5) {
+            result = "new_best"; score = 33;   // scores: new best 33, better than current 9, accepted new worse 1
+            set_best(cand.columns, cand.value, "lns:" + dop.name + "+" + rop.name);
+            set_current(cand.columns, cand.value);
+        } else if (cand.value < cur_cost_ - 0.5) {
+            result = "improved"; score = 9;
+            set_current(cand.columns, cand.value);
+        } else if (cand.value <= accept_limit) {
+            const bool fresh = !visited_.count(solution_hash(cand.columns));
+            result = "accepted"; score = fresh ? 1 : 0;
+            set_current(cand.columns, cand.value);
         } else {
-            result = dive.cut ? "dive_cut" : "no_improvement";
+            result = "rejected";
         }
-        if (greedy_improved && result != "improved") result = "improved";   // the greedy repair already improved
-        dive_steps_ += dive.steps;
+        const double dur = elapsed() - t_start;
+        for (Operator* o : {&dop, &rop}) {
+            o->tries++;
+            o->time += dur;
+            o->seg_score += score;
+            o->seg_time += dur;
+            o->seg_uses++;
+            if (result == "new_best") o->new_best++;
+            else if (result == "improved") o->improved++;
+            else if (result == "accepted") o->accepted++;
+            else if (result == "pruned") o->pruned++;
+        }
+        if (result == "pruned") pruned_count++;
+        if ((it + 1) % std::max(1, params_.lns_segment) == 0) end_segment();
 
-        // adaptive weights (scores: new best 6, MIP proved no better 1, timeout 0.5, pruned 0.3)
-        double score = result == "improved" ? 6.0 : (result == "no_improvement" || result == "dive_cut") ? 1.0
-                     : result == "mip_timeout" ? 0.5 : 0.3;
-        op.weight = std::max(0.05, 0.8 * op.weight + 0.2 * score);
-        if (result == "improved") { op.improvements++; no_improve = 0; }
+        // neighbourhood size: grow when stuck or pruned, shrink when the MIP times out,
+        // restart small after a long plateau at the maximum
+        if (result == "new_best") no_best = 0;
         else {
-            no_improve++;
-            if (result == "pruned") frac *= 1.15;                 // too small to contain an improvement
-            else if (result == "mip_timeout") frac *= 0.85;       // too large for the repair MIP
-            else if (no_improve % 4 == 0) frac *= 1.15;
-            // stuck at the largest neighbourhoods: restart small (diversification)
-            if (no_improve >= 12 && frac >= params_.lns_max_frac - 1e-9) {
-                frac = params_.lns_init_frac;
-                no_improve = 0;
-            }
+            no_best++;
+            if (result == "pruned") frac *= 1.1;
+            else if (cand.mip_timeout || cand.over_budget) frac *= 0.85;
+            else if (no_best % 5 == 0) frac *= 1.1;
+            if (no_best >= 15 && frac >= params_.lns_max_frac - 1e-9) { frac = params_.lns_init_frac; no_best = 0; }
         }
         frac = std::clamp(frac, std::min(1.0, 2.0 / std::max(1, n)), std::max(params_.lns_init_frac, params_.lns_max_frac));
 
-        std::cout << std::left << std::setw(6) << it << std::setw(10) << std::fixed << std::setprecision(1) << elapsed()
-                  << std::setw(10) << op.name << std::setw(5) << k << std::setw(14) << std::setprecision(1) << cg.lb
-                  << std::setw(12) << std::setprecision(0) << ub_ << result << "\n";
+        std::cout << std::left << std::setw(6) << it << std::setw(8) << std::fixed << std::setprecision(1) << elapsed()
+                  << std::setw(11) << dop.name << std::setw(9) << rop.name << std::setw(4) << k << std::setw(11)
+                  << std::setprecision(0) << (std::isnan(cand.lb) ? 0.0 : cand.lb) << std::setw(10)
+                  << (cand.found ? cand.value : 0.0) << std::setw(10) << cur_cost_ << std::setw(10) << ub_ << result << "\n";
         if (trace_.enabled()) {
-            JsonObj w;
-            for (auto& o : ops_) w.num(o.name.c_str(), o.weight);
-            trace_.write(JsonObj().str("ev", "lns").integer("it", it).num("t", elapsed()).num("dur", elapsed() - t_start)
-                             .str("op", op.name).integer("k", k).num("frac", frac).num("lp", cg.lp).num("lb", cg.lb)
-                             .str("result", result).num("value", new_value).num("ub", ub_)
-                             .integer("cg_it", cg.iterations).integer("dive_steps", dive.steps)
-                             .integer("pool", pool_.size()).raw("weights", w.dump()));
+            JsonObj w, rw;
+            for (auto& o : dops_) w.num(o.name.c_str(), o.weight);
+            for (auto& o : rops_) rw.num(o.name.c_str(), o.weight);
+            trace_.write(JsonObj().str("ev", "lns").integer("it", it).num("t", elapsed()).num("dur", dur)
+                             .str("op", dop.name).str("rep", rop.name).integer("k", k).num("frac", frac)
+                             .num("lb", cand.lb).num("value", cand.found ? cand.value : NAN)
+                             .num("prev", before).num("cur", cur_cost_).num("ub", ub_)
+                             .num("temp", temperature).num("thr", sa ? threshold : NAN).str("result", result)
+                             .integer("cg_it", cand.cg_it).integer("dive_steps", cand.dive_steps)
+                             .integer("rows", cand.rows).integer("cols", cand.cols)
+                             .raw("weights", w.dump()).raw("rweights", rw.dump()));
         }
         it++;
         trace_bounds(it);
@@ -676,44 +868,48 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
     stats_.time_in_pricing_s = time_pricing_;
     stats_.time_in_heuristics_s = time_mip_;
 
-    if (trace_.enabled()) {
-        std::string opstats = "[";
-        for (size_t i = 0; i < ops_.size(); ++i) {
-            if (i) opstats += ",";
-            opstats += JsonObj().str("name", ops_[i].name).integer("tries", ops_[i].tries)
-                           .integer("improvements", ops_[i].improvements).integer("pruned", ops_[i].pruned)
-                           .num("weight", ops_[i].weight).dump();
+    auto stats_json = [](const std::vector<Operator>& ops) {
+        std::string s = "[";
+        for (size_t i = 0; i < ops.size(); ++i) {
+            if (i) s += ",";
+            s += JsonObj().str("name", ops[i].name).integer("tries", ops[i].tries).integer("new_best", ops[i].new_best)
+                     .integer("improved", ops[i].improved).integer("accepted", ops[i].accepted)
+                     .integer("pruned", ops[i].pruned).num("time", ops[i].time).num("weight", ops[i].weight).dump();
         }
-        opstats += "]";
+        return s + "]";
+    };
+    if (trace_.enabled()) {
         trace_.write(JsonObj().str("ev", "end").str("method", "lns").num("t", stats_.total_time_s).str("status", status)
                          .num("root_lb", root_lb_).num("lb", root_lb_).num("ub", ub_).num("gap", stats_.gap_pct)
                          .num("ttfs", ttfs_).integer("nodes", it).integer("pruned", pruned_count)
                          .integer("columns", pool_.size()).num("t_master", time_master_).num("t_pricing", time_pricing_)
-                         .num("t_heur", time_mip_).num("t_greedy", time_greedy_).integer("greedy_improvements", greedy_improvements_)
-                         .raw("operators", opstats));
+                         .num("t_heur", time_mip_).num("t_greedy", time_greedy_)
+                         .raw("operators", stats_json(dops_)).raw("repairs", stats_json(rops_)));
         trace_.close();
     }
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "\n=======================================================\n";
-    std::cout << " FIN LNS : " << instance_name << " (" << status << ")\n";
+    std::cout << " FIN ALNS : " << instance_name << " (" << status << ")\n";
     std::cout << "   ├─ Temps total     : " << stats_.total_time_s << " s (master " << time_master_ << ", pricing "
-              << time_pricing_ << ", MIP " << time_mip_ << ")\n";
-    std::cout << "   ├─ Plongees        : " << dive_steps_ << " fixations au total\n";
+              << time_pricing_ << ", MIP " << time_mip_ << ", insertion " << time_greedy_ << ")\n";
     std::cout << "   ├─ Iterations      : " << it << " (" << pruned_count << " voisinages elagues par la borne, "
-              << greedy_improvements_ << " ameliorations par l'insertion gloutonne en " << time_greedy_ << " s)\n";
+              << dive_steps_ << " fixations de plongee)\n";
     std::cout << "   ├─ Borne (racine)  : " << root_lb_ << "\n";
     std::cout << "   ├─ Meilleure sol.  : " << ub_ << "\n";
     std::cout << "   └─ Gap             : " << stats_.gap_pct << " %\n";
-    for (auto& o : ops_)
-        std::cout << "      " << std::setw(9) << o.name << " essais " << o.tries << ", ameliorations " << o.improvements
-                  << ", elagues " << o.pruned << ", poids " << o.weight << "\n";
+    for (auto* ops : {&dops_, &rops_})
+        for (auto& o : *ops)
+            std::cout << "      " << std::setw(11) << o.name << " essais " << std::setw(4) << o.tries << " meilleure "
+                      << std::setw(3) << o.new_best << " amelio. " << std::setw(3) << o.improved << " acceptees "
+                      << std::setw(3) << o.accepted << " elagues " << std::setw(3) << o.pruned << " temps "
+                      << std::setprecision(1) << o.time << " s poids " << std::setprecision(2) << o.weight << "\n";
     std::cout << "=======================================================\n\n";
     return stats_;
 }
 
 void LnsSolver::export_best_solution(const std::string& filename) const {
     std::vector<Column> sol;
-    for (const auto& cols : incumbent_)
+    for (const auto& cols : best_)
         for (int c : cols) sol.push_back(pool_.get_column(c));
     write_solution_json(filename, graph_, sol, ub_, stats_, params_.link_conflicts);
 }

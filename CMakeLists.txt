@@ -55,6 +55,7 @@ set(
     src/solver/SearchTree.cpp
     src/solver/BranchAndPriceSolver.cpp
     src/solver/LnsSolver.cpp
+    src/solver/SubMaster.cpp
     src/solver/SolutionWriter.cpp
 )
 

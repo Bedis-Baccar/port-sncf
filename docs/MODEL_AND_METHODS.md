@@ -1,7 +1,7 @@
-# Link conflicts and the LNS method
+# Link conflicts and the ALNS method
 
 This note explains the two changes of this branch: the **link-conflict constraint**
-(the model) and the **Large Neighbourhood Search** (a second solve method). It also
+(the model) and the **Adaptive Large Neighbourhood Search** (a second solve method). It also
 says how each was verified.
 
 ## 1. Link conflicts
@@ -54,74 +54,143 @@ reduced cost stays exact and the pricing algorithm is unchanged. Only `GraphBuil
 - **Objective:** it can only stay equal or increase. Results of the two models are not
   directly comparable.
 
-## 2. Large Neighbourhood Search (`--method lns`)
+## 2. Adaptive Large Neighbourhood Search (`--method lns`)
 
-The LNS reuses the B&P machinery (restricted master, pricing, Lagrangian bound). It is a
-primal method: it finds good solutions fast, but its only lower bound is the root LP
-bound, so it does not prove optimality except when UB reaches that bound.
+The ALNS reuses the B&P machinery (pricing, Lagrangian bound, column pool). It is a primal
+method: it finds good solutions fast, but its only lower bound is the root LP bound, so it
+proves optimality only when UB reaches that bound.
 
 ```
 root      greedy insertion (several orders)                       → first solution in milliseconds
-          column generation on all trains (time-budgeted)        → root LP bound LB (valid)
-          LP-guided greedy insertion, then MIP on the root columns → better solution
-loop      destroy : free k trains (adaptive operator, adaptive k); the others keep their path
-          repair  : 1. greedy re-insertion of the freed trains through the pricing
-                    2. price-and-dive: CG pricing only the freed trains → neighbourhood bound;
-                       fix the most integral columns, re-price, … until the LP is integral
-                    3. (optional) short MIP on the neighbourhood's columns, cutoff UB − 1
-          stop    : time limit, or UB = ⌈LB⌉ (proven optimal)
+          column generation on all trains (time-budgeted)        → root LP bound LB + root duals
+          LP-guided greedy insertion, then MIP on the root columns → initial current solution
+          (root MIP ≤ min(lns_root_mip_time_s, 20 % of the time limit))
+loop      draw the acceptance threshold θ (simulated annealing)
+          destroy : pick an operator (roulette on weights), free k trains; the others keep their path
+          repair  : pick a repair operator (roulette on weights):
+                    greedy   — insert the freed trains one by one through the pricing
+                    regret   — insert first the train whose refusal would cost the most
+                    dive     — CG on a reduced sub-master + diving, pruned by its bound
+                    dive_mip — dive, then a short MIP on the sub-master's columns
+          accept  : new best | better than current | worse but ≤ θ (SA) | rejected
+          every lns_segment iterations: update the operator weights
+          stop    : time limit, iteration limit, or UB = ⌈LB⌉ (proven optimal)
 ```
 
-### How the pricing and the relaxation are used
-- **Greedy insertion is a pricing call.** Train k is priced with π_k = its refusal cost,
-  α = 0, and μ = −BIG on every resource already used. The pricing then returns exactly the
-  cheapest conflict-free path that performs all the train's services, or nothing (refusing
-  the train is cheaper). This builds a full feasible solution in about n pricing calls,
-  with no MIP. It is used for the first solution and as the fast repair.
-- **Neighbourhood bound.** In a neighbourhood, a fixed train has a single column, already
-  in the RMP, so its best reduced cost is ≥ 0. Hence `z_RMP + Σ_k min(0, rc_k)` is a
-  valid lower bound of the restricted problem. Costs are integers, so if this bound is
-  ≥ UB − 1 the neighbourhood cannot contain a better solution: its CG stops at once and
-  the repair is skipped ("pruned"). The same test cuts a dive as soon as the fixings make
-  improvement impossible ("dive cut").
-- **Root bound:** it gives the gap, and `UB = ⌈LB⌉` proves optimality.
-- **Dual-guided destroy:** it frees the trains whose current path has the largest reduced
-  cost under the root duals, i.e. the paths the LP disagrees with most.
-- **LP-guided insertion:** it inserts first the trains with the smallest LP flow on their
-  "refused" column.
-- **MIP cutoff UB − 1:** the optional MIP polish only searches for strict improvements.
+### Reduced sub-master (`SubMaster`)
+The first LNS re-solved the **full** restricted master (all trains, all conflict rows)
+for every neighbourhood, with the fixed trains held by column bounds. Each LP solve cost
+as much as at the root, so only 1–26 neighbourhoods fitted in 60 s.
 
-### Destroy operators (ALNS)
+A neighbourhood now gets its own small LP:
+- **columns:** only the freed trains — their refusal column, their current path and their
+  300 most recent pool columns, plus whatever the neighbourhood's pricing generates;
+- **fixed trains are constants:** their cost is added to the objective, and the
+  (resource, time) cells they occupy are **blocked**: a column using a blocked cell is
+  never added, and the pricing sees μ = −BIG on those cells;
+- **conflict rows are created lazily**, only for cells that at least two columns of the
+  sub-master use.
+
+The sub-master has typically a few hundred rows and columns (the app shows
+"rows × cols" per iteration) instead of thousands. Its Lagrangian bound
+`z_sub + cost(fixed) + Σ_{k freed} min(0, rc_k)` is a valid bound of the neighbourhood,
+because the fixed trains contribute constants and no reduced cost.
+
+### Repair operators
+| repair | what it does | cost |
+| --- | --- | --- |
+| `greedy` | refused trains first, then by LP rank (randomised); each insertion is one pricing call with π_k = refusal cost, μ = −BIG on used cells → the cheapest conflict-free path doing all the services, or a refusal | ms |
+| `regret` | prices every remaining train, inserts the one with the largest refusal-cost − path-cost (+ noise), re-prices lazily only the trains whose path touched the newly used cells | ms |
+| `dive` | CG on the sub-master; while the LP is fractional, fix the columns ≥ 0.99 (or the largest one) and re-price; a refusal column is never rounded | 0.1–2 s |
+| `dive_mip` | `dive`, then a MIP on all the sub-master's columns with cutoff min(current, dive) − 1 | ≤ `lns_mip_time_s` more |
+
+**Bound pruning:** costs are integers, so the LP repairs stop as soon as the neighbourhood
+bound is ≥ current − 1 ("pruned" if it happens before any fixing, "dive cut" after).
+LP repairs therefore only search for improvements of the *current* solution; the cheap
+insertions are the ones that produce the worse moves that simulated annealing may accept.
+
+**Iteration budget:** an LP repair stops at `max(1 s, lns_iter_time_frac × time limit)`
+(3 % by default). Without it, a single degenerate neighbourhood CG could take 30 s on
+small sce 5.
+
+### Destroy operators
 | operator | frees |
 | --- | --- |
 | `random` | k random trains |
 | `time` | the trains present in the station at the same time as a random seed train |
 | `related` | the trains sharing physical nodes with a seed train while present at the same time |
-| `dual` | high reduced cost under the root duals (randomised greedy, Ropke & Pisinger style) |
+| `dual` | high reduced cost of their current path under the root duals (randomised greedy, Ropke & Pisinger) |
 | `rejected` | refused trains + the trains competing with them for the same time window |
+| `bottleneck` | the trains whose current path uses a cell the root LP prices as most contested (most negative conflict dual μ, roulette on −μ over the 200 most contested cells) |
 
-**Operator weights:** `w ← 0.8 w + 0.2 score`, where the score is 6 for a new best, 1 for
-"repaired but no better", 0.5 for a MIP timeout and 0.3 for pruned.
+### Acceptance: simulated annealing with a relative temperature
+The temperature is relative to the **current** cost: a solution worse by a fraction p of
+the current cost is accepted with probability 1/2, with p decreasing geometrically from
+`lns_sa_start` (2 %) to `lns_sa_end` (0.05 %) along the time (or iteration) budget:
 
-**Neighbourhood size:** the share of freed trains grows (×1.15) when neighbourhoods are
-pruned or nothing improves, shrinks (×0.85) when the MIP times out, and restarts at its
-initial value after 12 non-improving iterations at the maximum (diversification).
+```
+T = p(progress) · cost(current) / ln 2
+θ = cost(current) − T · ln U,  U ~ U(0,1)        (drawn before the repair)
+accept the candidate if cost ≤ θ
+```
+`--lns-accept improve` sets θ = current − 1 (pure descent). The best solution is always
+kept apart from the current one, and a visited-solution hash avoids rewarding cycles.
+
+### Adaptive weights (Ropke & Pisinger segments)
+Each iteration scores both operators used: **33** for a new best, **9** for better than
+current, **1** for a worse solution accepted for the first time, 0 otherwise. Every
+`lns_segment` iterations (10):
+
+```
+w ← max(0.1, (1 − ρ) w + ρ · perf / mean(perf))       ρ = lns_reaction = 0.3
+perf = score / use                 (destroy operators)
+perf = score / (time + 0.05 · use) (repair operators: their costs differ by 1000×)
+```
+Operators not used in the segment keep their weight.
+
+**Neighbourhood size** (share of freed trains, from `lns_init_frac` to `lns_max_frac`):
+×1.1 when pruned or after every 5 iterations without a new best, ×0.85 when the MIP times
+out or the iteration budget is spent, and back to `lns_init_frac` after 15 non-improving
+iterations at the maximum (diversification).
 
 ### Degeneracy
-Restricted masters of neighbourhoods can be strongly degenerate: the RMP value stays
-constant while the pricing keeps finding negative reduced costs. The CG stops after 25
-iterations without RMP improvement (60 at the root); the bound computed so far stays
-valid. Dual stabilisation (e.g. Wentges smoothing) would be the next step.
+Neighbourhood sub-masters can be strongly degenerate: the RMP value stays constant while
+the pricing keeps finding negative reduced costs. The CG stops after 25 iterations without
+RMP improvement (60 at the root), or at the iteration budget; the bound computed so far
+stays valid. Dual stabilisation (Wentges smoothing) would be the next step.
+
+### Measured effect (CLP/CBC adapter, 60 s, 2 seeds, link conflicts on)
+| instance | best root LB | first LNS (mean UB) | ALNS (mean UB) | iterations / 60 s (old → new) |
+| --- | ---: | ---: | ---: | --- |
+| medium sce 2 | 10,662 | 44,010 | **23,121** | 1–4 → 56–62 |
+| small sce 2 | 5,438 | 16,211 | **12,359** | 17–26 → 66–81 |
+| small sce 4 | 25,347 | 48,662 | **43,357** | 1–2 → 46–66 |
+| small sce 5 | 25,386 | 101,396 | **95,099** | 3–5 → 37–93 |
+
+On small sce 2 the ALNS mean (12,359) is below the B&P incumbent after the same time
+(12,504). Successful repairs are spread over all four repair operators, which is what the
+per-second scoring is meant to achieve. With CLP/CBC every LP is several times slower
+than with Gurobi, so the time-related parameters (iteration budget, MIP time, root time
+share) should be recalibrated on the Gurobi machine; the app's "Fast", "Intensify" and
+"Large" presets are starting points for that.
 
 ### Trace and app
-The LNS writes the same `trace.jsonl` events as the B&P (`cg` with `ctx` = `root` / `lns`,
+The ALNS writes the same `trace.jsonl` events as the B&P (`cg` with `ctx` = `root` / `lns`,
 `bounds`, `incumbent` with sources such as `greedy:lp-guided`, `lns:dual+greedy`,
-`lns:time`, `lns:random+mip`), plus one `lns` event per iteration (operator, k,
-neighbourhood bound, result, weights). In the app:
-- the Convergence tab shows the neighbourhoods against UB and the root bound, the
-  outcomes per operator, the adaptive weights and the neighbourhood size;
-- the Benchmark page compares B&P and LNS per instance, with the gap measured to the best
-  lower bound known for that instance.
+`lns:bottleneck+dive_mip`), plus one `lns` event per iteration: destroy and repair
+operator, k, neighbourhood bound, candidate / previous / current / best cost, temperature,
+threshold, result, CG iterations, dive steps, sub-master size and both weight vectors.
+In the app:
+- the Convergence tab shows the search trajectory (each candidate coloured by its
+  outcome, the current solution, the best solution and the root bound), outcomes per
+  destroy and per repair operator, the repair operators' time share, and the evolution
+  of the weights, of k and of the temperature;
+- the run dialog exposes every parameter, with presets;
+- the Benchmark page compares B&P and ALNS per instance, with the gap measured to the
+  best lower bound known for that instance.
+
+Runs of the first LNS (results `improved` / `no_improvement` / `dive_cut` / `mip_timeout`)
+are still displayed.
 
 ## 3. Verification
 

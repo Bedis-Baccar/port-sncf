@@ -80,4 +80,6 @@ public:
     void set_focus_to_auto();
     // MIP only: ignore solutions whose objective is not better than `value` (GRB_INFINITY = off)
     void set_cutoff(double value);
+    // The Gurobi environment (one license session), shared with the LNS sub-masters
+    GRBEnv& env() { return *env_; }
 };

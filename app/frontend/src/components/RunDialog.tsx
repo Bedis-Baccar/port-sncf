@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DEFAULT_PARAMS, LNS_OPERATORS, api, type SolverParams } from "../api";
+import { DEFAULT_PARAMS, LNS_OPERATORS, LNS_REPAIRS, api, type SolverParams } from "../api";
 import { href, navigate } from "../router";
 
 interface Props {
@@ -19,14 +19,15 @@ const BP_PRESETS: { name: string; hint: string; p: Partial<SolverParams> }[] = [
 ];
 
 const LNS_PRESETS: { name: string; hint: string; p: Partial<SolverParams> }[] = [
-  { name: "Default", hint: "balanced", p: {} },
-  { name: "Small & fast", hint: "small neighbourhoods, no MIP polish", p: { lns_init_frac: 0.15, lns_max_frac: 0.4, lns_mip_time_s: 0 } },
-  { name: "Large", hint: "large neighbourhoods, longer MIP polish", p: { lns_init_frac: 0.4, lns_max_frac: 0.9, lns_mip_time_s: 15 } },
+  { name: "Default ALNS", hint: "simulated annealing, all operators, adaptive", p: {} },
+  { name: "Fast", hint: "small neighbourhoods, no MIP repair", p: { lns_init_frac: 0.15, lns_max_frac: 0.4, lns_repairs: ["greedy", "regret", "dive"] } },
+  { name: "Intensify", hint: "improvements only, LP-based repairs", p: { lns_accept: "improve", lns_repairs: ["dive", "dive_mip"] } },
+  { name: "Large", hint: "large neighbourhoods, longer MIP repair", p: { lns_init_frac: 0.4, lns_max_frac: 0.9, lns_mip_time_s: 15, lns_iter_time_frac: 0.1 } },
   { name: "No bound", hint: "ablation: never prune neighbourhoods by their bound", p: { lns_bound_pruning: false } },
 ];
 
 const BP_KEYS: (keyof SolverParams)[] = ["cg_gaps", "heuristic_every", "diving", "dive_cg_gap", "mip_heuristic", "mip_time_s", "branching", "search", "threads"];
-const LNS_KEYS: (keyof SolverParams)[] = ["lns_init_frac", "lns_max_frac", "lns_mip_time_s", "lns_root_mip_time_s", "lns_root_time_frac", "lns_cg_gap", "lns_bound_pruning", "lns_operators", "lns_max_iter", "seed"];
+const LNS_KEYS: (keyof SolverParams)[] = ["lns_init_frac", "lns_max_frac", "lns_mip_time_s", "lns_root_mip_time_s", "lns_root_time_frac", "lns_cg_gap", "lns_bound_pruning", "lns_operators", "lns_repairs", "lns_accept", "lns_sa_start", "lns_sa_end", "lns_segment", "lns_reaction", "lns_iter_time_frac", "lns_max_iter", "seed"];
 const pick = (keys: (keyof SolverParams)[]) => Object.fromEntries(keys.map((k) => [k, DEFAULT_PARAMS[k]])) as Partial<SolverParams>;
 
 type Mode = "bp" | "lns" | "both";
@@ -233,12 +234,22 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
                 </div>
               </div>
             </div>
-            <h3>Repair (pricing + relaxation)</h3>
+            <h3>Repair operators (chosen adaptively, weighted by score per second)</h3>
             <p className="hint">
-              Greedy re-insertion through the pricing, then price-and-dive: column generation pricing only the freed trains, fixing the
-              most integral columns until the LP is integral. The neighbourhood's Lagrangian bound stops the work as soon as it proves
-              that no solution better than UB − 1 exists there.
+              Greedy and regret insert the freed trains one by one through the pricing (milliseconds, they produce the moves that
+              simulated annealing may accept); LP-based repairs work on a reduced sub-master (only the freed trains, the
+              tracks of the fixed trains blocked in the pricing) and stop as soon as its Lagrangian bound proves that nothing better than
+              the current solution exists in the neighbourhood.
             </p>
+            <div className="row" style={{ margin: "6px 0 10px" }}>
+              {LNS_REPAIRS.map((o) => (
+                <label key={o.id} className="check" title={o.hint}>
+                  <input type="checkbox" checked={p.lns_repairs.includes(o.id)}
+                    onChange={(e) => set("lns_repairs", e.target.checked ? [...p.lns_repairs, o.id] : p.lns_repairs.filter((x) => x !== o.id))} />
+                  {o.label}
+                </label>
+              ))}
+            </div>
             <div className="form">
               <label className="field">
                 CG gap inside a neighbourhood
@@ -249,8 +260,37 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
                 Prune neighbourhoods by their bound
               </label>
               <label className="field">
-                MIP polish per neighbourhood (s, 0 = off)
+                MIP time of the dive + MIP repair (s)
                 <input type="number" min={0} value={p.lns_mip_time_s} onChange={(e) => set("lns_mip_time_s", +e.target.value)} />
+              </label>
+              <label className="field">
+                Iteration budget (share of the time limit)
+                <input type="number" min={0.001} max={1} step={0.01} value={p.lns_iter_time_frac} onChange={(e) => set("lns_iter_time_frac", +e.target.value)} />
+              </label>
+            </div>
+            <h3>Acceptance &amp; adaptation</h3>
+            <div className="form">
+              <label className="field">
+                Acceptance
+                <select value={p.lns_accept} onChange={(e) => set("lns_accept", e.target.value as SolverParams["lns_accept"])}>
+                  <option value="sa">simulated annealing</option>
+                  <option value="improve">improvements only</option>
+                </select>
+              </label>
+              <label className="field" title="A solution this much worse (relative) is accepted with probability 1/2 at the start / end of the run">
+                SA: worsening accepted at 50 % (start → end)
+                <span className="row" style={{ gap: 6 }}>
+                  <input type="number" min={0.00001} max={1} step={0.005} value={p.lns_sa_start} disabled={p.lns_accept !== "sa"} onChange={(e) => set("lns_sa_start", +e.target.value)} style={{ width: "45%" }} />
+                  <input type="number" min={0.00001} max={1} step={0.0005} value={p.lns_sa_end} disabled={p.lns_accept !== "sa"} onChange={(e) => set("lns_sa_end", +e.target.value)} style={{ width: "45%" }} />
+                </span>
+              </label>
+              <label className="field">
+                Weight update every N iterations (segment)
+                <input type="number" min={1} value={p.lns_segment} onChange={(e) => set("lns_segment", +e.target.value)} />
+              </label>
+              <label className="field">
+                Reaction factor ρ
+                <input type="number" min={0.01} max={1} step={0.05} value={p.lns_reaction} onChange={(e) => set("lns_reaction", +e.target.value)} />
               </label>
               <label className="field">
                 Max iterations (0 = time limit)
@@ -283,7 +323,7 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
         <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
           <button className="ghost" onClick={onClose}>Cancel</button>
           {mode === "both" && <span className="muted small" style={{ marginRight: "auto" }}>2 runs, one after the other: up to {Math.round((2 * p.time_limit_s) / 60)} min</span>}
-          <button className="primary" disabled={busy || !solverAvailable || (showLns && p.lns_operators.length === 0)} onClick={submit}>
+          <button className="primary" disabled={busy || !solverAvailable || (showLns && (p.lns_operators.length === 0 || p.lns_repairs.length === 0))} onClick={submit}>
             {busy ? <span className="spinner" /> : "▶"} {mode === "both" ? "Benchmark both" : `Start ${mode === "lns" ? "LNS" : "Branch-and-Price"}`}
           </button>
         </div>

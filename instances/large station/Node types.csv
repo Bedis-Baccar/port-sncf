@@ -1,0 +1,7 @@
+ID,name,io,parking,dwelling,service1,service2,service3,service4
+1,In-out,1,0,0,0,0,0,0
+2,Storage ,0,1,1,0,0,0,0
+3,Repair ,0,1,1,1,0,1,1
+4,Wheel-turning ,0,1,1,0,1,0,0
+5,Track,0,1,0,0,0,0,0
+6,Cleaning,0,1,1,0,0,1,1

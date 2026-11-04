@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <memory>
+#include <string>
 #include "gurobi_c++.h"
 #include "Column.h"
 #include "TimeSpaceGraph.h"
@@ -42,13 +43,14 @@ private:
     void build_initial_model(const std::vector<Train>& trains, const TimeSpaceGraph& graph);
 
 public:
-    MasterProblem(const TimeSpaceGraph& graph, const std::vector<Train>& trains);
+    MasterProblem(const TimeSpaceGraph& graph, const std::vector<Train>& trains, int threads = 0, const std::string& log_file = "../gurobi_log.txt");
     ~MasterProblem();
 
     // --- Résolution continue (Column Generation) ---
     void solve();
     bool is_optimal() const;
     bool is_infeasible() const;
+    bool is_interrupted() const;
     double get_objective_value() const;
     int get_gurobi_status() const;
 

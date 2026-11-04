@@ -6,11 +6,14 @@
 
 using namespace std;
 
-MasterProblem::MasterProblem(const TimeSpaceGraph& graph, const vector<Train>& trains):status_(MasterStatus::UNSOLVED)
+MasterProblem::MasterProblem(const TimeSpaceGraph& graph, const vector<Train>& trains, int threads, const std::string& log_file):status_(MasterStatus::UNSOLVED)
 {
     env_ = make_unique<GRBEnv>();
-    env_->set(GRB_StringParam_LogFile, "../gurobi_log.txt");
+    env_->set(GRB_StringParam_LogFile, log_file);
     env_->set(GRB_IntParam_LogToConsole, 0);
+    if (threads > 0) {
+        env_->set(GRB_IntParam_Threads, threads);
+    }
     model_ = make_unique<GRBModel>(*env_);
     num_trains_ = trains.size();
     num_pnodes_ = graph.get_nb_pnodes();
@@ -70,6 +73,10 @@ void MasterProblem::solve(){
 
 bool MasterProblem::is_optimal() const{
     return model_->get(GRB_IntAttr_Status) == GRB_OPTIMAL;
+}
+
+bool MasterProblem::is_interrupted() const {
+    return model_->get(GRB_IntAttr_Status) == GRB_INTERRUPTED;
 }
 
 bool MasterProblem::is_infeasible() const {

@@ -317,7 +317,10 @@ void GraphBuilder::build_state_transfer_arcs()
     for (auto& ntype : data_.node_types)
     {
         can_0 = ntype.getParking();
-        for (int s = 1; s <= n_services_; s++)
+        // services are 0-indexed: the former loop `s = 1; s <= n_services_` skipped
+        // service 0 and read one element past the end (undefined behaviour that
+        // randomly added state-transfer arcs to in/out nodes).
+        for (int s = 0; s < n_services_; s++)
         {
             can_0 = can_0 || ntype.getService(s);
         }

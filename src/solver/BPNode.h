@@ -3,6 +3,7 @@
 #include <tuple>
 #include <vector>
 #include <map>
+#include <string>
 
 enum class NodeStatus {
     UNPROCESSED, PROCESSING, FRACTIONAL, INTEGER, INFEASIBLE, PRUNED
@@ -22,7 +23,10 @@ struct BPNode {
     std::vector<int> train_ids;
     // Subset of forbidden arcs decided in the parent node 
     std::map<int,std::vector<int>> forbidden_arcs_ids;
-
+    // Unique id (creation order, root = 0) and description of the branching
+    // decision that created the node. Used by the trace / web app.
+    int id = -1;
+    std::string label = "";
 }
 ;
 

@@ -1,7 +1,11 @@
 #pragma once
 
-#include <vector>
+#include <atomic>
+#include <chrono>
+#include <fstream>
+#include <string>
 #include <tuple>
+#include <vector>
 
 #include "TimeSpaceGraph.h"
 #include "Train.h"
@@ -10,13 +14,23 @@
 #include "GlobalStateManager.h"
 #include "SearchTree.h"
 #include "BPNode.h"
+#include "SolverParams.h"
+#include "Trace.h"
 
 
 struct BranchingDecision {
     std::vector<int> left_train_ids;
     std::vector<int> right_train_ids;
-    std::map<int,std::vector<int>> left_forbidden_arcs;  
-    std::map<int, std::vector<int>> right_forbidden_arcs; 
+    std::map<int,std::vector<int>> left_forbidden_arcs;
+    std::map<int, std::vector<int>> right_forbidden_arcs;
+    // Description for the trace / web app
+    std::string rule;          // "service_split" or "quantum"
+    std::string left_label;
+    std::string right_label;
+    int train = -1;            // branched train
+    int service = -1;          // service_split: service id
+    int split_time = -1;       // service_split: left = start <= split_time, right = start > split_time
+    int divergence_time = -1;  // quantum: time of the divergence node
 };
 
 enum class SolutionStatus{
@@ -36,20 +50,22 @@ enum class SolveStatus{
 // Structure pour stocker les résultats d'une instance
 struct SolveStatistics {
     std::string instance_name;
+    std::string status;         // OPTIMAL, TIME_LIMIT, INTERRUPTED
     int num_trains;
     int num_arcs;
-    
+
     double total_time_s;
     double time_to_first_sol_s; // -1 si aucune solution trouvée
-    
+
     double root_lb;
     double final_lb;
     double final_ub;
     double gap_pct;
-    
+
     int explored_nodes;
     int pruned_nodes;
-    
+    int num_columns;
+
     // Profiling
     double time_in_master_s;
     double time_in_pricing_s;
@@ -58,23 +74,38 @@ struct SolveStatistics {
 
 class BranchAndPriceSolver {
 public:
-    BranchAndPriceSolver(const TimeSpaceGraph& graph, const std::vector<Train>& trains);
+    BranchAndPriceSolver(const TimeSpaceGraph& graph, const std::vector<Train>& trains,
+                         const SolverParams& params = SolverParams());
     SolveStatistics solve(double time_limit_s, const std::string& instance_name);
+    SolveStatistics solve(const std::string& instance_name) { return solve(params_.time_limit_s, instance_name); }
     double get_optimal_value() const;
     std::vector<Column> get_optimal_solution() const;
     void export_best_solution(const std::string& filename) const;
+
+    // Asynchronous stop request (signal handler safe): the solver finishes the
+    // current step, then stops and still exports its best solution.
+    static void request_stop() { stop_requested_.store(true); }
+    static bool stop_requested() { return stop_requested_.load(); }
+
 private:
-    void run_column_generation(BPNode* node, double termination_gap);
+    void run_column_generation(BPNode* node, double termination_gap, const char* context = "node");
     bool is_current_solution_integer() const;
     BranchingDecision choose_branching_variable() const;
     BranchingDecision quantum_train_branching() const;
     BranchingDecision service_split_branching() const;
-    void branch_on_node(BPNode* parent, const BranchingDecision& decision);
+    std::vector<BPNode*> branch_on_node(BPNode* parent, const BranchingDecision& decision);
     int add_Column(Column& col);
     void switch_state(BPNode* target);
+    BPNode* next_node();
 
     void run_global_mip_heuristic(double time_limit_seconds);
     void run_diving_heuristic(BPNode base_node);
+    void update_incumbent(double value, const std::vector<int>& column_ids, const char* source);
+
+    // Trace helpers
+    double elapsed() const;
+    std::string paths_json(const std::vector<int>& column_ids, bool with_flow) const;
+    void trace_node(const BPNode* node, const char* event) const;
 
     void print_log_header() const;
     void print_log_line(int iter, int depth, double elapsed_s, double lb, double ub, const std::string& action) const;
@@ -82,6 +113,7 @@ private:
 
     const TimeSpaceGraph& graph_;
     const std::vector<Train>& trains_;
+    SolverParams params_;
     MasterProblem master_;
     PricingProblem pricing_;
     GlobalStateManager state_manager_;
@@ -92,5 +124,10 @@ private:
     double time_pricing_ = 0.0;
     double time_heuristics_ = 0.0;
 
+    std::chrono::steady_clock::time_point start_time_;
+    mutable Trace trace_;
+    SolveStatistics last_stats_{};
+
+    static inline std::atomic<bool> stop_requested_{false};
     constexpr static double INF = 1e+9;
 };

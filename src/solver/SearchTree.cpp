@@ -23,6 +23,8 @@ SearchTree::SearchTree():
         std::map<int, std::vector<int>>()          // forbidden_arcs_ids
     });
     
+    root->id = 0;
+    root->label = "root";
     current_node_ = root.get();
     add_node_to_queues(root.get());
     all_generated_node_.push_back(std::move(root)); // L'arbre prend possession de la racine
@@ -40,6 +42,8 @@ SearchTree::SearchTree(const std::vector<Column>& incumbent_solution, double val
         nullptr, std::vector<BPNode*>(), 0, -INF, NodeStatus::UNPROCESSED, std::vector<int>(), std::map<int, std::vector<int>>()
     });
     
+    root->id = 0;
+    root->label = "root";
     current_node_ = root.get();
     add_node_to_queues(root.get());
     all_generated_node_.push_back(std::move(root));
@@ -49,7 +53,19 @@ SearchTree::SearchTree(const std::vector<Column>& incumbent_solution, double val
 
 void SearchTree::set_strategy_DFS() {
     current_strategy_ = SearchStrategy::DFS;
-    open_node_DFS_ = std::stack<BPNode*>(); 
+    open_node_DFS_ = std::stack<BPNode*>();
+    // Transfer the pending best-bound nodes so they are not lost (best bound ends on top).
+    std::vector<BPNode*> pending;
+    while (!open_node_BBF_.empty()) {
+        BPNode* node = open_node_BBF_.top();
+        open_node_BBF_.pop();
+        if (node->status == NodeStatus::UNPROCESSED) {
+            pending.push_back(node);
+        }
+    }
+    for (auto it = pending.rbegin(); it != pending.rend(); ++it) {
+        open_node_DFS_.push(*it);
+    }
 }
 
 void SearchTree::set_strategy_BBF() {
@@ -97,7 +113,7 @@ BPNode* SearchTree::get_next_node() {
 
 // --- Construction de l'arbre ---
 
-BPNode* SearchTree::create_child_node(BPNode* parent, const std::vector<int>& train_ids, const std::map <int, std::vector<int>>& additional_forbidden_arcs) {
+BPNode* SearchTree::create_child_node(BPNode* parent, const std::vector<int>& train_ids, const std::map <int, std::vector<int>>& additional_forbidden_arcs, const std::string& label) {
     if (parent == nullptr) throw std::runtime_error("Cannot create a child without a parent.");
 
 
@@ -114,6 +130,8 @@ BPNode* SearchTree::create_child_node(BPNode* parent, const std::vector<int>& tr
 
 
     BPNode* raw_ptr = new_node.get();
+    raw_ptr->id = static_cast<int>(all_generated_node_.size());
+    raw_ptr->label = label;
     parent->children.push_back(raw_ptr);
 
 
@@ -147,24 +165,27 @@ void SearchTree::prune(BPNode* node) {
 
 double SearchTree::get_best_upper_bound() const { return best_upper_bound_; }
 double SearchTree::get_best_lower_bound() const {
-    double bound = INF; 
-
-    if (!open_node_BBF_.empty()) {
-        bound = open_node_BBF_.top()->lower_bound;
-    }
-    
-    if (current_node_ != nullptr && (current_node_->status == NodeStatus::PROCESSING || current_node_->status == NodeStatus::UNPROCESSED)) {
-        if (current_node_->lower_bound < bound) {
-            bound = current_node_->lower_bound;
+    // The global bound is the smallest lower bound among nodes still to be
+    // solved (UNPROCESSED) or being solved (PROCESSING). Scanning the owner
+    // vector covers both DFS and BBF modes and skips stale queue entries.
+    double bound = INF;
+    for (const auto& node : all_generated_node_) {
+        if (node->status == NodeStatus::UNPROCESSED || node->status == NodeStatus::PROCESSING) {
+            bound = std::min(bound, node->lower_bound);
         }
     }
-    
-    if (bound == INF) {
-        return best_upper_bound_;
-    }
-    
-    return bound;
+    // No open node left: the incumbent is optimal.
+    return std::min(bound, best_upper_bound_);
 }
+
+int SearchTree::count_open_nodes() const {
+    int n = 0;
+    for (const auto& node : all_generated_node_) {
+        if (node->status == NodeStatus::UNPROCESSED) n++;
+    }
+    return n;
+}
+
 SearchStrategy SearchTree::get_current_strategy() const { return current_strategy_; }
 std::vector<Column> SearchTree::get_incumbent_solution() const { return incumbent_solution_; }
 

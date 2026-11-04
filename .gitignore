@@ -13,3 +13,14 @@ results**.txt
 
 #Zone identifier
 *.Zone.Identifier 
+# Gurobi license / logs (never commit licenses)
+*.lic
+gurobi_log.txt
+results/runs/*/gurobi_log.txt
+
+# Web app
+node_modules/
+app/frontend/dist/
+__pycache__/
+*.pyc
+.venv/

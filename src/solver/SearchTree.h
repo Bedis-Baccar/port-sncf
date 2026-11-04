@@ -39,7 +39,7 @@ public:
     
     // --- Construction de l'arbre ---
     // Crée un nœud enfant, le lie à son parent, gère sa mémoire et l'ajoute aux files d'attente
-    BPNode* create_child_node(BPNode* parent, const std::vector<int>& train_id, const std::map<int,std::vector<int>>& additional_forbidden_arcs);
+    BPNode* create_child_node(BPNode* parent, const std::vector<int>& train_id, const std::map<int,std::vector<int>>& additional_forbidden_arcs, const std::string& label = "");
     void prune(BPNode* node); 
 
     // --- Getters & Setters ---
@@ -48,6 +48,7 @@ public:
     SearchStrategy get_current_strategy() const;
     std::vector<Column> get_incumbent_solution() const;
     BPNode* get_current_node() const;
+    int count_open_nodes() const;
     
     void set_best_upper_bound(double upper_bound);
     void set_best_lower_bound(double lower_bound);

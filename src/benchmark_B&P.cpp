@@ -12,6 +12,7 @@
 #include "MasterProblem.h"
 #include "SearchTree.h"
 #include "BranchAndPriceSolver.h"
+#include "SolverParams.h"
 
 namespace fs = std::filesystem;
 
@@ -39,40 +40,40 @@ int main() {
         
     };
 
-    double time_limit_s = 3600.0;
+    // Every convergence knob can be tuned here (see SolverParams.h)
+    SolverParams base_params;
+    base_params.time_limit_s = 3600.0;
 
-    fs::create_directories("../results/dynamics");
-    fs::create_directories("../results/solutions");
-
-    
+    fs::create_directories("../results/runs");
 
     // Préparation du fichier de synthèse global
     std::ofstream summary_file("../results/summary_benchmark.csv");
     summary_file << "Instance,Trains,Arcs,Root_LB,Final_LB,Final_UB,Gap_%,TotalTime_s,TTFS_s,Nodes,MasterTime_s,PricingTime_s,HeuristicsTime_s\n";
-    int i = 0;
-    // Boucle de résolution
-    for (const auto& path : instance_paths) {
-        std::string name = instance_name[i];
+    for (size_t i = 0; i < instance_paths.size(); ++i) {
+        const std::string& path = instance_paths[i];
+        const std::string& name = instance_name[i];
         std::cout << "\n=======================================================\n";
         std::cout << " LANCEMENT INSTANCE : " << name << "\n";
         std::cout << "=======================================================\n";
+
+        SolverParams params = base_params;
+        params.out_dir = "../results/runs/" + name;
+        fs::create_directories(params.out_dir);
 
         InstanceParser parser(path);
         InstanceData data = parser.parse();
         GraphBuilder builder(data);
         TimeSpaceGraph graph = builder.build();
-        BranchAndPriceSolver solver(graph, data.trains);
+        BranchAndPriceSolver solver(graph, data.trains, params);
 
-        SolveStatistics stats = solver.solve(time_limit_s, name);
-        std::string sol_filename = "../results/solutions/solution_" + name + ".json";
-        solver.export_best_solution(sol_filename);
+        SolveStatistics stats = solver.solve(name);
+        solver.export_best_solution(params.out_dir + "/solution.json");
 
-        // Écriture dans le CSV global
         summary_file << stats.instance_name << ","
                      << stats.num_trains << ","
                      << stats.num_arcs << ","
                      << stats.root_lb << ","
-                     << (stats.final_lb > - 1e9 ? std::to_string(stats.final_ub) : "") << ","
+                     << (stats.final_lb > -1e9 ? std::to_string(stats.final_lb) : "") << ","
                      << (stats.final_ub < 1e9 ? std::to_string(stats.final_ub) : "") << ","
                      << std::max(0.0, stats.gap_pct) << ","
                      << stats.total_time_s << ","
@@ -81,9 +82,7 @@ int main() {
                      << stats.time_in_master_s << ","
                      << stats.time_in_pricing_s << ","
                      << stats.time_in_heuristics_s << "\n";
-                     
         summary_file.flush();
-        ++i;
     }
 
     std::cout << "BENCHMARK TERMINÉ ! Résultats sauvegardés dans summary_benchmark.csv\n";

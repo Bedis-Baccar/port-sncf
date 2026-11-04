@@ -1,108 +1,138 @@
+#include <csignal>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <filesystem>
-#include <cstdlib> // Pour std::stod
 
 #include "GraphParser.h"
 #include "GraphBuilder.h"
 #include "TimeSpaceGraph.h"
-#include "PricingProblem.h"
-#include "MasterProblem.h"
-#include "SearchTree.h"
 #include "BranchAndPriceSolver.h"
+#include "SolverParams.h"
 
 namespace fs = std::filesystem;
-
-
 
 void print_usage(const std::string& program_name) {
     std::cout << "\n=======================================================\n";
     std::cout << "SOLVEUR BRANCH-AND-PRICE\n";
     std::cout << "=======================================================\n";
-    std::cout << "Utilisation : " << program_name << " -f <chemin_fichier> [-t <temps_limite>] [-n <nom du fichier>]\n\n";
-    std::cout << "Options:\n";
-    std::cout << "  -f, --file    Chemin vers le fichier de l'instance (Requis)\n";
-    std::cout << "  -t, --time    Temps limite de resolution en secondes (Defaut: 3600)\n";
-    std::cout << "  -n, --name     Nom personalisé de l'instance (Defaut : chemin vers le fichier)";
-    std::cout << "  -h, --help    Affiche ce message d'aide\n";
+    std::cout << "Utilisation : " << program_name << " -f <dossier_scenario> [options]\n\n";
+    std::cout << "Options generales :\n";
+    std::cout << "  -f, --file <dir>          Dossier du scenario (Requis)\n";
+    std::cout << "  -n, --name <name>         Nom de l'instance (Defaut : chemin du dossier)\n";
+    std::cout << "  -t, --time <s>            Temps limite en secondes (Defaut : 3600)\n";
+    std::cout << "  -o, --out <dir>           Dossier de sortie (Defaut : ../results/runs/<name>)\n";
+    std::cout << "      --no-trace            Ne pas ecrire trace.jsonl\n";
+    std::cout << "\nParametres de convergence :\n";
+    std::cout << "      --cg-gaps a,b,c,d     Gaps d'arret de la generation de colonnes\n";
+    std::cout << "                            racine, prof.<=5, prof.<=10, au-dela (Defaut : 0,0.001,0.005,0.01)\n";
+    std::cout << "      --heur-every <n>      Heuristiques primales tous les n noeuds, 0 = jamais (Defaut : 5)\n";
+    std::cout << "      --no-diving           Desactive l'heuristique de plongee\n";
+    std::cout << "      --dive-gap <g>        Gap de CG pendant la plongee (Defaut : 0.05)\n";
+    std::cout << "      --no-mip              Desactive l'heuristique MIP sur le maitre restreint\n";
+    std::cout << "      --mip-time <s>        Temps limite du MIP heuristique (Defaut : 15)\n";
+    std::cout << "      --branching <rule>    auto (service_split puis quantum) | quantum (Defaut : auto)\n";
+    std::cout << "      --dfs                 Exploration en profondeur d'abord (Defaut : meilleur bound)\n";
+    std::cout << "      --threads <n>         Threads Gurobi, 0 = defaut Gurobi (Defaut : 0)\n";
+    std::cout << "  -h, --help                Affiche ce message\n";
     std::cout << "=======================================================\n\n";
 }
 
+static void on_signal(int) {
+    BranchAndPriceSolver::request_stop();
+}
+
+static std::vector<double> parse_list(const std::string& s) {
+    std::vector<double> out;
+    std::stringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        out.push_back(std::stod(item));
+    }
+    return out;
+}
+
 int main(int argc, char** argv) {
-    std::string file_path = "";
-    std::string instance_name ="";
-    double time_limit_s = 3600.0; // 1 heure par défaut
-    bool flag_instance_name = false;
-    // --- 1. PARSING DES ARGUMENTS CLI ---
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        
-        if (arg == "-h" || arg == "--help") {
-            print_usage(argv[0]);
-            return 0;
-        } 
-        else if (arg == "-f" || arg == "--file") {
-            if (i + 1 < argc) {
-                file_path = argv[++i];
-            } else {
-                std::cerr << "Erreur : L'argument -f necessite un chemin de fichier.\n";
-                return 1;
-            }
-        } 
-        else if (arg == "-t" || arg == "--time") {
-            if (i + 1 < argc) {
-                time_limit_s = std::stod(argv[++i]); // Convertit le string en double
-            } else {
-                std::cerr << "Erreur : L'argument -t necessite une valeur numerique.\n";
-                return 1;
-            }
+    std::string file_path;
+    std::string instance_name;
+    SolverParams params;
+
+    auto need_value = [&](int& i, const std::string& arg) -> std::string {
+        if (i + 1 >= argc) {
+            throw std::invalid_argument("L'argument " + arg + " necessite une valeur.");
         }
-        else if (arg == "-n" || arg == "--name"){
-            flag_instance_name = true;
-            if(i + 1 < argc){
-                instance_name = argv[++i];
+        return argv[++i];
+    };
+
+    try {
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "-h" || arg == "--help") { print_usage(argv[0]); return 0; }
+            else if (arg == "-f" || arg == "--file") file_path = need_value(i, arg);
+            else if (arg == "-n" || arg == "--name") instance_name = need_value(i, arg);
+            else if (arg == "-t" || arg == "--time") params.time_limit_s = std::stod(need_value(i, arg));
+            else if (arg == "-o" || arg == "--out") params.out_dir = need_value(i, arg);
+            else if (arg == "--no-trace") params.trace = false;
+            else if (arg == "--cg-gaps") {
+                params.cg_gaps = parse_list(need_value(i, arg));
+                if (params.cg_gaps.size() != 4) throw std::invalid_argument("--cg-gaps attend 4 valeurs");
             }
-            else {
-                std::cerr << "Erreur : L'argument -n necessite un nom de fichier\n";
-                return 1;
+            else if (arg == "--heur-every") params.heuristic_every = std::stoi(need_value(i, arg));
+            else if (arg == "--no-diving") params.diving = false;
+            else if (arg == "--dive-gap") params.dive_cg_gap = std::stod(need_value(i, arg));
+            else if (arg == "--no-mip") params.mip_heuristic = false;
+            else if (arg == "--mip-time") params.mip_time_s = std::stod(need_value(i, arg));
+            else if (arg == "--branching") {
+                std::string rule = need_value(i, arg);
+                if (rule == "auto") params.branching = BranchingRule::AUTO;
+                else if (rule == "quantum") params.branching = BranchingRule::QUANTUM;
+                else throw std::invalid_argument("--branching : auto | quantum");
             }
+            else if (arg == "--dfs") params.start_dfs = true;
+            else if (arg == "--threads") params.threads = std::stoi(need_value(i, arg));
+            else throw std::invalid_argument("Argument inconnu : " + arg);
         }
+    } catch (const std::exception& e) {
+        std::cerr << "Erreur : " << e.what() << "\n";
+        print_usage(argv[0]);
+        return 1;
     }
-    if(!flag_instance_name){
-        instance_name = file_path;
-    }
-    // Vérification que le fichier a bien été fourni
+
     if (file_path.empty()) {
         std::cerr << "Erreur : Le chemin du fichier est requis.\n";
         print_usage(argv[0]);
         return 1;
     }
-    if(file_path.back() != '/'){
-        file_path = file_path + '/';
+    if (file_path.back() != '/') {
+        file_path += '/';
     }
-    // --- 2. INITIALISATION ET RÉSOLUTION ---
+    if (instance_name.empty()) {
+        instance_name = file_path;
+    }
+    if (params.out_dir.empty()) {
+        params.out_dir = "../results/runs/" + instance_name;
+    }
+
+    // Ctrl-C / SIGTERM (stop button of the web app): stop cleanly and export the incumbent
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+
     try {
         std::cout << "\nInitialisation de la resolution pour : " << instance_name << "\n";
-        std::cout << " Temps limite fixe a : " << time_limit_s << " secondes\n\n";
+        std::cout << " Temps limite fixe a : " << params.time_limit_s << " secondes\n";
+        std::cout << " Sorties : " << params.out_dir << "\n\n";
+        fs::create_directories(params.out_dir);
 
-        // Création des dossiers de résultats au cas où ils n'existent pas
-        fs::create_directories("../results/dynamics");
-        fs::create_directories("../results/solutions");
-
-        // Pipeline classique
         InstanceParser parser(file_path);
         InstanceData data = parser.parse();
         GraphBuilder builder(data);
         TimeSpaceGraph graph = builder.build();
-        BranchAndPriceSolver solver(graph, data.trains);
+        BranchAndPriceSolver solver(graph, data.trains, params);
 
-        // Lancement du solveur
-        SolveStatistics stats = solver.solve(time_limit_s, instance_name);
-
-        // Export de la solution
-        std::string sol_filename = "../results/solutions/solution_" + instance_name + ".json";
-        solver.export_best_solution(sol_filename);
+        solver.solve(instance_name);
+        solver.export_best_solution(params.out_dir + "/solution.json");
 
     } catch (const std::exception& e) {
         std::cerr << "\n EXCEPTION CRITIQUE DETECTEE :\n";

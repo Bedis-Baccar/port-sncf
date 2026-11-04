@@ -1,7 +1,10 @@
-﻿## Projet du Cours PORT 2026 - MPRO
+## Projet du Cours PORT 2026 - MPRO
+
+> **Visual app:** `./app/run.sh` then open http://localhost:8000 to explore instances, replay solutions on the
+> station map from t = 0 to the end, run the solver with custom convergence parameters and follow its
+> convergence live. See [`app/README.md`](app/README.md).
 
 ### 1. Build (Gurobi required)
-Hello everybody
 
 Prereqs:
 - `g++` and `cmake` available 
@@ -32,25 +35,31 @@ cmake --build .
 
 Headers are located under `src/builder`,`src/data`, `src/graph`, `src/parser`, `src/solver` and are all included in the CMakeLists.
 
-Headers are located under `src/builder`,`src/data`, `src/graph`, `src/parser`, `src/solver` and are all included in the CMakeLists
-
 ### Run Branch and Price CLI
-It is possible to run the solver on a specified instance using the cli tool.
 Usage
 ```
-./cli_tusp_solver -f -f <filepath> [-t <time limit in seconds>] [-n <instance name>]
+./cli_tusp_solver -f <scenario dir> [-n <name>] [-t <seconds>] [-o <output dir>] [convergence options]
 ```
 Arguments (optional):
-- `-t or --time `: time limit for the branch and price solver in second (default 3600)
-- `-n or --name` : name given to the current instance and used in the different result files (default filepath)
-- `-h or --help`: prints back a simple help message
+- `-t, --time`: time limit in seconds (default 3600)
+- `-n, --name`: instance name used in the output (default: the path)
+- `-o, --out`: output directory (default `../results/runs/<name>`)
+- `--cg-gaps a,b,c,d`: column generation stopping gaps at the root, depth <= 5, depth <= 10, deeper (default `0,0.001,0.005,0.01`)
+- `--heur-every n`: primal heuristics every n nodes, 0 = never (default 5)
+- `--no-diving`, `--dive-gap g` (default 0.05): diving heuristic
+- `--no-mip`, `--mip-time s` (default 15): MIP on the restricted master
+- `--branching auto|quantum`: service split with quantum fallback (default) or quantum only
+- `--dfs`: depth-first node selection (default best bound first)
+- `--threads n`: Gurobi threads (default 0 = Gurobi's choice)
+- `--no-trace`: do not write `trace.jsonl`
+- `-h, --help`
 
 Example:
 ```
-./cli_tusp_solver -f "../instances/large station/scenario 1" -n large_station_sce_1
+./cli_tusp_solver -f "../instances/large station/scenario 1" -n large_station_sce_1 -t 600 --heur-every 2
 ```
-Remark:
--The CLI produces file in predetermined spots (`results/dynamics` and `results/solutions`) if you don't rename the target it will erase the previous files at that spot. Be careful not to lose your precious data by launching twice the same instance with the same target name.
+`Ctrl-C` stops the solver cleanly: the best solution found so far is still exported.
+
 ### Run Branch and Price Benchmark
 It is possible to run the solver on a set of specified instance by editing its main entry point `src/benchmark_B&P.cpp`
 Usage
@@ -72,20 +81,14 @@ Example:
 ```
 
 ## Outputs
-Each run on an instance generates two types of files:
-- a `solution_instance_name.json` file that gives back basic information about the solver generated solution.
-- a `dynamics_instance_name.csv` file that gives back some information about the state of the solver at different points in time during solving
-- the benchmark executable creates a `summary_benchmark.csv` file that lists for each file specified in the benchmark the following statistics :
-  -the instance name
-  -the number of trains
-  -the number of arcs
-  -the root relaxation lower bound
-  -the final lower bound
-  -the final upper bound
-  -the final gap
-  -the total time of solve
-  -the time to first solution (TTFS)
-  -the number of explored nodes
-  -the time spent in the master problem
-  -the time spent in pricing
-  -the time spent in primal heuristics (it contains time from master and pricing as it also uses column generation)
+Each run writes into `results/runs/<name>/`:
+- `solution.json`: status, statistics and, for each train, its path (`arc_sequence`) in the time-space graph.
+- `trace.jsonl`: the event stream of the solve (column generation iterations, bounds, tree nodes, branching decisions, incumbents, root LP). Its format is documented in `app/README.md`.
+- `dynamics.csv`: the LB/UB timeline.
+- the benchmark executable also creates `results/summary_benchmark.csv` that lists for each instance:
+  the name, the number of trains and arcs, the root relaxation lower bound, the final lower and upper bounds,
+  the final gap, the total time, the time to first solution (TTFS), the number of explored nodes and the time
+  spent in the master problem, in pricing and in the primal heuristics (which also includes master and pricing time
+  because they use column generation).
+
+Results of the previous version (`results/solutions`, `results/dynamics`) are kept and can still be replayed in the app.

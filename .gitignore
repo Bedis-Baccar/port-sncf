@@ -24,3 +24,4 @@ app/frontend/dist/
 __pycache__/
 *.pyc
 .venv/
+app/.venv/

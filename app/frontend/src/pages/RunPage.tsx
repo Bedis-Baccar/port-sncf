@@ -51,6 +51,8 @@ export default function RunPage({ id, tab, health }: { id: string; tab: string; 
           <div className="row" style={{ marginTop: 4 }}>
             <h1 className="mono" style={{ fontSize: 18 }}>{info.kind === "legacy" ? id.replace("legacy:", "") : id}</h1>
             {running ? <span className="chip live info">LIVE</span> : statusChip(info)}
+            <span className="chip method">{info.method === "lns" ? "LNS" : "Branch-and-Price"}</span>
+            {!info.link_conflicts && <span className="chip neutral" title="Original model: head-on crossings on links allowed">original model</span>}
             {info.kind === "legacy" && <span className="chip neutral" title="Produced by the solver before instrumentation">old solver output</span>}
           </div>
         </div>
@@ -74,7 +76,7 @@ export default function RunPage({ id, tab, health }: { id: string; tab: string; 
       </div>
 
       <div className="tabs">
-        {TABS.map(([k, label]) => (
+        {TABS.filter(([k]) => !(k === "tree" && (info.method === "lns" || model.method === "lns"))).map(([k, label]) => (
           <a key={k} href={href.run(id, k)} className={tab === k ? "on" : ""}>{label}</a>
         ))}
       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type Instance, type RunInfo, type Solution, type SolvedTrain } from "../api";
+import { api, type Conflict, type Instance, type RunInfo, type Solution, type SolvedTrain } from "../api";
 import { fmt, serviceColor, trainColor } from "../colors";
 import EChart from "../components/EChart";
 import Gantt from "../components/Gantt";
@@ -8,7 +8,7 @@ import StationMap from "../components/StationMap";
 import TimeSpace from "../components/TimeSpace";
 import { eventLog, kpisAt, stateAt } from "../sim";
 import type { TraceModel } from "../trace";
-import { SOURCE_LABEL } from "../trace";
+import { sourceLabel } from "../trace";
 
 interface Props {
   run: RunInfo;
@@ -22,7 +22,7 @@ type Source = { kind: "best" } | { kind: "inc"; idx: number } | { kind: "lp" };
 
 export default function SimulationTab({ run, inst, solution, solutionError, model }: Props) {
   const [source, setSource] = useState<Source>({ kind: "best" });
-  const [data, setData] = useState<{ trains: SolvedTrain[]; T: number; label: string; conflicts: number; objective: number | null } | null>(null);
+  const [data, setData] = useState<{ trains: SolvedTrain[]; T: number; label: string; conflicts: Conflict[]; objective: number | null } | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [colorBy, setColorBy] = useState<"train" | "type">("train");
@@ -30,17 +30,17 @@ export default function SimulationTab({ run, inst, solution, solutionError, mode
   useEffect(() => {
     setLoadErr(null);
     if (source.kind === "best") {
-      if (solution) setData({ trains: solution.trains, T: solution.T, label: "best solution", conflicts: solution.conflicts.length, objective: solution.objective });
+      if (solution) setData({ trains: solution.trains, T: solution.T, label: "best solution", conflicts: solution.conflicts, objective: solution.objective });
       else setData(null);
     } else if (source.kind === "inc") {
       api.incumbent(run.id, source.idx)
-        .then((s) => setData({ trains: s.trains, T: s.T, label: `incumbent #${source.idx + 1}`, conflicts: s.conflicts.length, objective: s.value }))
+        .then((s) => setData({ trains: s.trains, T: s.T, label: `incumbent #${source.idx + 1}`, conflicts: s.conflicts, objective: s.value }))
         .catch((e) => setLoadErr(e.message));
     } else {
       api.lp(run.id)
         .then((lp) => setData({
           trains: lp.paths.map((p) => ({ ...p, id: p.train_id, type: inst.train_types[inst.trains[p.train_id].type]?.name ?? "", type_id: inst.trains[p.train_id].type, a_t: inst.trains[p.train_id].a_t, d_t: inst.trains[p.train_id].d_t, required_services: inst.trains[p.train_id].required_services.map((s) => inst.services[s].name) })),
-          T: lp.T, label: `root LP (${lp.fractional_trains.length} fractional trains)`, conflicts: 0, objective: lp.value,
+          T: lp.T, label: `root LP (${lp.fractional_trains.length} fractional trains)`, conflicts: [], objective: lp.value,
         }))
         .catch((e) => setLoadErr(e.message));
     }
@@ -80,6 +80,9 @@ export default function SimulationTab({ run, inst, solution, solutionError, mode
   }, [data]);
 
   const accepted = data ? new Set(data.trains.filter((t) => !t.rejected).map((t) => t.id)).size : 0;
+  const nodeConflicts = data ? data.conflicts.filter((c) => c.kind !== "link").length : 0;
+  const crossings = data ? data.conflicts.filter((c) => c.kind === "link") : [];
+  const activeCrossings = crossings.filter((c) => pb.t >= c.t && pb.t < c.t + inst.t_s);
   const rejected = data ? data.trains.filter((t) => t.rejected).length : 0;
 
   return (
@@ -97,7 +100,7 @@ export default function SimulationTab({ run, inst, solution, solutionError, mode
             {model.lp && <option value="lp">Root LP relaxation — fractional ({fmt(model.lp.value, 1)})</option>}
             {model.incumbents.map((inc) => (
               <option key={inc.idx} value={`inc:${inc.idx}`}>
-                Incumbent #{inc.idx + 1} — {fmt(inc.value)} at {inc.t.toFixed(1)} s ({SOURCE_LABEL[inc.source] ?? inc.source})
+                Incumbent #{inc.idx + 1} — {fmt(inc.value)} at {inc.t.toFixed(1)} s ({sourceLabel(inc.source)})
               </option>
             ))}
           </select>
@@ -109,9 +112,15 @@ export default function SimulationTab({ run, inst, solution, solutionError, mode
         <div className="right row">
           {data && <span className="chip info">{accepted} accepted</span>}
           {rejected > 0 && <span className="chip bad">{rejected} refused</span>}
-          {data && source.kind !== "lp" && (data.conflicts === 0
-            ? <span className="chip ok" title="Independent check: no physical node is used by two trains at the same time (headways included)">✓ no conflict</span>
-            : <span className="chip bad">{data.conflicts} conflicts!</span>)}
+          {data && source.kind !== "lp" && (nodeConflicts === 0
+            ? <span className="chip ok" title="Independent check: no physical node is used by two trains at the same time (headways included)">✓ no node conflict</span>
+            : <span className="chip bad">{nodeConflicts} node conflicts!</span>)}
+          {data && source.kind !== "lp" && (crossings.length === 0
+            ? <span className="chip ok" title="Independent check: no two trains on the same link in the same time step">✓ no head-on crossing</span>
+            : <span className="chip bad" title={`Two trains cross the same link in opposite directions (allowed by the original model): ${crossings.map((c) => `${c.node} @${c.t}`).join(", ")}`}
+                style={{ cursor: "pointer" }} onClick={() => { const c = crossings.find((x) => x.t > pb.t) ?? crossings[0]; pb.setT(c.t + inst.t_s / 2); setSelected(c.trains[0]); }}>
+                ⚠ {crossings.length} head-on crossing{crossings.length > 1 ? "s" : ""} (next ▸)
+              </span>)}
         </div>
       </div>
 
@@ -124,7 +133,8 @@ export default function SimulationTab({ run, inst, solution, solutionError, mode
 
       <div className="grid sim">
         <div>
-          <StationMap inst={inst} states={states} selected={selected} onSelect={setSelected} colorBy={colorBy} height={500} />
+          <StationMap inst={inst} states={states} selected={selected} onSelect={setSelected} colorBy={colorBy} height={500}
+            alerts={activeCrossings.map((c) => ({ from: c.from!, to: c.to! }))} />
           <PlayerBar t={pb.t} tMax={T} step={inst.t_s} playing={pb.playing} speed={pb.speed} speeds={[2, 5, 10, 30, 60]}
             onToggle={pb.toggle} onSeek={(v) => pb.setT(v)} onSpeed={pb.setSpeed} format={(v) => `t = ${String(Math.floor(v)).padStart(3, "0")}`} />
         </div>
@@ -180,7 +190,8 @@ export default function SimulationTab({ run, inst, solution, solutionError, mode
         <>
           <div className="panel" style={{ marginTop: 14 }}>
             <div className="panel-head"><h2>Time-space diagram</h2><span className="muted small">x = time, y = physical node · colored bars = services · click to seek</span></div>
-            <TimeSpace inst={inst} trains={data.trains} T={T} t={pb.t} onSeek={pb.setT} selected={selected} onSelect={setSelected} />
+            <TimeSpace inst={inst} trains={data.trains} T={T} t={pb.t} onSeek={pb.setT} selected={selected} onSelect={setSelected}
+              crossings={crossings} />
           </div>
           <div className="panel" style={{ marginTop: 14 }}>
             <div className="panel-head">

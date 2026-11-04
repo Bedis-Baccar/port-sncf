@@ -15,12 +15,13 @@ interface Props {
   onLayoutChange?: (layout: Record<string, XY>) => void;
   colorBy?: "train" | "type";
   height?: number;
+  alerts?: { from: string; to: string }[];   // links drawn in red (e.g. head-on crossings now)
 }
 
 const PAD = 60;
 
 export default function StationMap({
-  inst, states = [], selected = null, onSelect, editable = false, onLayoutChange, colorBy = "train", height = 470,
+  inst, states = [], selected = null, onSelect, editable = false, onLayoutChange, colorBy = "train", height = 470, alerts = [],
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const gRef = useRef<SVGGElement>(null);
@@ -144,6 +145,18 @@ export default function StationMap({
             return (
               <line key={l.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
                 stroke={l.siding ? "#3b5b8f" : "#2a3b5c"} strokeWidth={l.siding ? 7 : 2.2} strokeLinecap="round" />
+            );
+          })}
+          {/* alerts: links used by two trains at the same time */}
+          {alerts.map((al, i) => {
+            const a = layout[al.from], b = layout[al.to];
+            if (!a || !b) return null;
+            return (
+              <g key={`al${i}`}>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ef4444" strokeWidth={12} strokeOpacity={0.35} strokeLinecap="round" />
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ef4444" strokeWidth={3} strokeLinecap="round" />
+                <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 12} textAnchor="middle" fontSize={13} fontWeight={800} fill="#fca5a5">⚠ crossing</text>
+              </g>
             );
           })}
           {/* nodes */}

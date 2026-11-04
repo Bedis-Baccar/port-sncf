@@ -17,9 +17,14 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+LNS_OPERATORS = ("random", "time", "related", "dual", "rejected")
+
+
 class SolverParams(BaseModel):
-    """Mirror of src/solver/SolverParams.h (defaults = historical behaviour,
+    """Mirror of src/solver/SolverParams.h (defaults = solver defaults,
     except the time limit which is shorter for interactive use)."""
+    method: Literal["bp", "lns"] = "bp"
+    link_conflicts: bool = True
     time_limit_s: float = Field(300, gt=0, le=86400)
     cg_gaps: list[float] = Field(default_factory=lambda: [0.0, 0.001, 0.005, 0.01])
     heuristic_every: int = Field(5, ge=0, le=10000)
@@ -30,6 +35,25 @@ class SolverParams(BaseModel):
     branching: Literal["auto", "quantum"] = "auto"
     search: Literal["bbf", "dfs"] = "bbf"
     threads: int = Field(0, ge=0, le=256)
+    # LNS
+    lns_init_frac: float = Field(0.3, gt=0, le=1)
+    lns_max_frac: float = Field(0.7, gt=0, le=1)
+    lns_mip_time_s: float = Field(5, ge=0, le=3600)
+    lns_root_mip_time_s: float = Field(10, ge=0, le=3600)
+    lns_root_time_frac: float = Field(0.3, gt=0, le=1)
+    lns_cg_gap: float = Field(0.001, ge=0, le=1)
+    lns_bound_pruning: bool = True
+    lns_operators: list[Literal["random", "time", "related", "dual", "rejected"]] = Field(
+        default_factory=lambda: list(LNS_OPERATORS))
+    lns_max_iter: int = Field(0, ge=0)
+    seed: int = Field(1, ge=0)
+
+    @field_validator("lns_operators")
+    @classmethod
+    def _some_operator(cls, v):
+        if not v:
+            raise ValueError("choose at least one LNS operator")
+        return v
 
     @field_validator("cg_gaps")
     @classmethod
@@ -54,6 +78,19 @@ class SolverParams(BaseModel):
             args.append("--no-mip")
         if self.search == "dfs":
             args.append("--dfs")
+        if not self.link_conflicts:
+            args.append("--no-link-conflicts")
+        args += ["--method", self.method]
+        if self.method == "lns":
+            args += [
+                "--lns-frac", repr(self.lns_init_frac), "--lns-max-frac", repr(self.lns_max_frac),
+                "--lns-mip-time", repr(self.lns_mip_time_s), "--lns-root-mip-time", repr(self.lns_root_mip_time_s),
+                "--lns-root-frac", repr(self.lns_root_time_frac), "--lns-cg-gap", repr(self.lns_cg_gap),
+                "--lns-ops", ",".join(self.lns_operators), "--lns-max-iter", str(self.lns_max_iter),
+                "--seed", str(self.seed),
+            ]
+            if not self.lns_bound_pruning:
+                args.append("--lns-no-prune")
         return args
 
 
@@ -97,6 +134,7 @@ class SolverManager:
         self.root = root
         self.runs_dir = runs_dir
         self.active: dict[str, RunningSolve] = {}
+        self.batches: dict[str, dict] = {}
         self._lock = threading.Lock()
 
     def solver_path(self) -> Path | None:
@@ -113,7 +151,7 @@ class SolverManager:
         meta.update(updates)
         f.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    def start(self, station: str, scenario: str, scenario_dir: Path, params: SolverParams) -> str:
+    def start(self, station: str, scenario: str, scenario_dir: Path, params: SolverParams, batch: str | None = None) -> str:
         exe = self.solver_path()
         if exe is None:
             raise RuntimeError(
@@ -121,12 +159,16 @@ class SolverManager:
             )
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         k = re.sub(r"\D", "", scenario) or slug(scenario)
-        run_id = f"{slug(station)}_sce_{k}_{stamp}"
+        run_id = f"{slug(station)}_sce_{k}_{params.method}_{stamp}"
+        n = 1
+        while (self.runs_dir / run_id).exists():   # several runs started in the same second
+            n += 1
+            run_id = f"{slug(station)}_sce_{k}_{params.method}_{stamp}-{n}"
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
         self._write_meta(
             run_dir, id=run_id, station=station, scenario=scenario, params=params.model_dump(),
-            created=datetime.now().isoformat(timespec="seconds"), state="running",
+            created=datetime.now().isoformat(timespec="seconds"), state="running", batch=batch,
         )
         cmd = [str(exe), "-f", str(scenario_dir) + os.sep, "-n", run_id, "-o", str(run_dir), *params.to_args()]
         log = open(run_dir / "stdout.log", "w", encoding="utf-8")
@@ -165,6 +207,73 @@ class SolverManager:
 
         threading.Thread(target=_kill_later, daemon=True).start()
         return True
+
+    # ------------------------------------------------------------- batches --
+    def start_batch(self, name: str, jobs: list[dict], resolve_dir) -> str:
+        """jobs: [{station, scenario, params: SolverParams}]; run one after the other."""
+        bid = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{len(self.batches)}"
+        batch = {"id": bid, "name": name or bid, "created": datetime.now().isoformat(timespec="seconds"),
+                 "jobs": [{"station": j["station"], "scenario": j["scenario"], "params": j["params"].model_dump(),
+                           "state": "pending", "run_id": None, "error": None} for j in jobs],
+                 "cancelled": False}
+        with self._lock:
+            self.batches[bid] = batch
+        self._save_batch(batch)
+        t = threading.Thread(target=self._run_batch, args=(bid, resolve_dir), daemon=True)
+        t.start()
+        return bid
+
+    def _save_batch(self, batch: dict):
+        d = self.runs_dir.parent / "batches"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{batch['id']}.json").write_text(json.dumps(batch, indent=1), encoding="utf-8")
+
+    def _run_batch(self, bid: str, resolve_dir):
+        batch = self.batches[bid]
+        for job in batch["jobs"]:
+            if batch["cancelled"]:
+                job["state"] = "cancelled"
+                continue
+            try:
+                sdir = resolve_dir(job["station"], job["scenario"])
+                job["run_id"] = self.start(job["station"], job["scenario"], sdir, SolverParams(**job["params"]), batch=bid)
+                job["state"] = "running"
+                self._save_batch(batch)
+                while self.is_running(job["run_id"]):
+                    time.sleep(1)
+                job["state"] = "done"
+            except Exception as e:  # noqa: BLE001 — keep the batch going
+                job["state"] = "failed"
+                job["error"] = str(e)
+            self._save_batch(batch)
+
+    def cancel_batch(self, bid: str) -> bool:
+        b = self.batches.get(bid)
+        if not b:
+            return False
+        b["cancelled"] = True
+        for j in b["jobs"]:
+            if j["state"] == "running" and j["run_id"]:
+                self.stop(j["run_id"])
+        return True
+
+    def list_batches(self) -> list[dict]:
+        d = self.runs_dir.parent / "batches"
+        out = {}
+        if d.exists():
+            for f in d.glob("*.json"):
+                try:
+                    b = json.loads(f.read_text(encoding="utf-8"))
+                    out[b["id"]] = b
+                except (OSError, json.JSONDecodeError):
+                    pass
+        out.update(self.batches)   # live state wins
+        for b in out.values():
+            if b["id"] not in self.batches:   # from a previous server session
+                for j in b["jobs"]:
+                    if j["state"] in ("pending", "running"):
+                        j["state"] = "interrupted"
+        return sorted(out.values(), key=lambda b: b["created"], reverse=True)
 
     def is_running(self, run_id: str) -> bool:
         return run_id in self.active

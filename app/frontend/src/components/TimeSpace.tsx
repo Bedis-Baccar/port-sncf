@@ -1,6 +1,6 @@
 import * as d3 from "d3";
 import { useMemo, useRef, useState } from "react";
-import type { Instance, SolvedTrain } from "../api";
+import type { Conflict, Instance, SolvedTrain } from "../api";
 import { serviceColor, trainColor } from "../colors";
 import { useWidth } from "../useWidth";
 
@@ -13,12 +13,13 @@ interface Props {
   selected?: number | null;
   onSelect?: (id: number | null) => void;
   height?: number;
+  crossings?: Conflict[];
 }
 
 const M = { l: 62, r: 14, t: 12, b: 28 };
 
 /** Time-space diagram: x = time, y = physical node, one polyline per train path. */
-export default function TimeSpace({ inst, trains, T, t, onSeek, selected = null, onSelect, height }: Props) {
+export default function TimeSpace({ inst, trains, T, t, onSeek, selected = null, onSelect, height, crossings = [] }: Props) {
   const ref = useRef<SVGSVGElement>(null);
   const [wrapRef, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
@@ -103,6 +104,18 @@ export default function TimeSpace({ inst, trains, T, t, onSeek, selected = null,
                 <rect key={`s${k}`} x={x(s.t0)} y={y(s.node)! - 3} width={Math.max(1, x(s.t1) - x(s.t0))} height={6} rx={2}
                   fill="#3b82f6" fillOpacity={0.6} />
               ))}
+            </g>
+          );
+        })}
+        {/* head-on crossings: an X between the two nodes, in the middle of the move */}
+        {crossings.map((c, i) => {
+          const ya = y(c.from!), yb = y(c.to!);
+          if (ya === undefined || yb === undefined) return null;
+          const cx = x(c.t + inst.t_s / 2), cy = (ya + yb) / 2;
+          return (
+            <g key={`x${i}`}>
+              <circle cx={cx} cy={cy} r={9} fill="rgba(239,68,68,0.25)" stroke="#ef4444" />
+              <path d={`M${cx - 5},${cy - 5} L${cx + 5},${cy + 5} M${cx - 5},${cy + 5} L${cx + 5},${cy - 5}`} stroke="#fca5a5" strokeWidth={2} />
             </g>
           );
         })}

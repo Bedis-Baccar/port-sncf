@@ -117,10 +117,18 @@ def decode_solution(g: TimeSpaceGraph, train_paths: list[dict]) -> dict:
             **d,
         })
 
-    conflicts = [
-        {"node": inst.pnodes[p].name, "t": t, "trains": ks}
-        for (p, t), ks in sorted(occ.items()) if len(set(ks)) > 1
-    ]
+    # Two kinds of violations, both checked independently of the model that produced
+    # the solution: a node used by two trains (original constraints) and a link used
+    # by two trains in the same step (head-on crossing, forbidden by link conflicts).
+    conflicts = []
+    for (r, t), ks in sorted(occ.items()):
+        if len(set(ks)) < 2:
+            continue
+        if g.is_link_resource(r):
+            a, b = g.resource_names[r].split("|")
+            conflicts.append({"kind": "link", "node": f"{a}–{b}", "from": a, "to": b, "t": t, "trains": ks})
+        else:
+            conflicts.append({"kind": "node", "node": inst.pnodes[r].name, "t": t, "trains": ks})
     return {"trains": trains, "conflicts": conflicts}
 
 

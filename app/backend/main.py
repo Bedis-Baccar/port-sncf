@@ -228,6 +228,44 @@ def start_run(req: RunRequest):
     return {"id": run_id}
 
 
+class BatchJob(BaseModel):
+    station: str
+    scenario: str
+    params: SolverParams = SolverParams()
+
+
+class BatchRequest(BaseModel):
+    name: str = ""
+    jobs: list[BatchJob]
+
+
+@app.post("/api/batches")
+def start_batch(req: BatchRequest):
+    if not req.jobs:
+        raise HTTPException(422, "empty batch")
+    if manager.solver_path() is None:
+        raise HTTPException(503, "Solver binary not found.")
+    for j in req.jobs:
+        try:
+            store.scenario_dir(j.station, j.scenario)
+        except FileNotFoundError as e:
+            _not_found(e)
+    bid = manager.start_batch(req.name, [j.model_dump() | {"params": j.params} for j in req.jobs], store.scenario_dir)
+    return {"id": bid}
+
+
+@app.get("/api/batches")
+def list_batches():
+    return manager.list_batches()
+
+
+@app.post("/api/batches/{bid}/cancel")
+def cancel_batch(bid: str):
+    if not manager.cancel_batch(bid):
+        raise HTTPException(404, "unknown or finished batch")
+    return {"ok": True}
+
+
 @app.post("/api/runs/{run_id}/stop")
 def stop_run(run_id: str):
     if not manager.stop(run_id):

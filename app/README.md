@@ -57,12 +57,13 @@ Tests: `cd app/backend && python -m pytest -q`.
 | --- | --- |
 | **Instances** | Grid of stations × scenarios with size, status (optimal / gap / not solved) and best objective. *Explore*, *Replay*, *Run*. |
 | **Explore an instance** | Station map (automatic schematic layout, **editable by drag & drop**, saved to `instances/<station>/layout.json`), station load vs capacity, service demand vs capable nodes, arcs of the time-space graph, demand Gantt, all runs of the instance. |
-| **Run** | Time limit, or tick **Tune convergence parameters**: CG gap per depth tier, heuristic frequency, diving (+ dive gap), restricted-master MIP (+ time limit), branching rule, node selection, Gurobi threads. Presets: *Fast primal*, *Tight bound*, *Pure B&P*. |
-| **Simulation** | Animated station map: trains move along the tracks during shunting, service progress rings, parking badges. Play / pause / step (← →, space), speed 2× → 60×. KPIs at t (in station, shunting, in service, services done, cost accrued), event log, time-space diagram, train Gantt, cost breakdown, node utilisation. Replay the **best solution**, **any intermediate incumbent**, or the **fractional root LP** ("ghost trains" with opacity = flow). Independent conflict check (✓ no conflict). |
+| **Run** | Choose the method (**Branch-and-Price**, exact, or **LNS**, heuristic) and the model (**forbid head-on crossings on links**, on by default). Then set a time limit, or tick **Tune … parameters**. For B&P: CG gap per depth tier, heuristic frequency, diving (+ dive gap), restricted-master MIP (+ time limit), branching rule, node selection, Gurobi threads. For LNS: neighbourhood share (initial / max), destroy operators, CG gap, bound pruning, MIP polish, root budget, seed. Presets for both. |
+| **Simulation** | Animated station map (head-on crossings flash in red, with a "⚠ N crossings (next ▸)" button): trains move along the tracks during shunting, service progress rings, parking badges. Play / pause / step (← →, space), speed 2× → 60×. KPIs at t (in station, shunting, in service, services done, cost accrued), event log, time-space diagram, train Gantt, cost breakdown, node utilisation. Replay the **best solution**, **any intermediate incumbent**, or the **fractional root LP** ("ghost trains" with opacity = flow). Independent conflict check (✓ no conflict). |
 | **Convergence** | LB/UB step curves vs time or nodes, incumbent markers by source (B&P node / diving / MIP), heuristic windows, DFS↔BBF switches, gap on a log scale, column pool and open nodes, **column generation per node** (RMP value vs Lagrangian bound, columns added, most negative reduced cost: the tailing-off effect is visible), time split master / pricing / heuristics, incumbents table. A solver-time slider replays the whole solve. |
-| **Search tree** | The B&P tree growing over solver time, node colour = status, dashed ring = node being solved, node details (branching decision with service names, bound history). |
+| **LNS** (Convergence tab of an LNS run) | Every neighbourhood at its Lagrangian bound, coloured by outcome (improved / repaired / dive cut / pruned by the bound / MIP timeout), against UB and the root bound. Outcomes per destroy operator, adaptive weights and neighbourhood size. |
+| **Search tree** (B&P runs) | The B&P tree growing over solver time, node colour = status, dashed ring = node being solved, node details (branching decision with service names, bound history). |
 | **Solver log** | Console output of the run (streamed live). |
-| **Benchmark** | Difficulty heatmap (best gap per station × scenario), gap vs size, normalised bound curves of up to 6 runs overlaid, sortable table of all runs with their parameters. |
+| **Benchmark** | **Run a benchmark**: tick instances × methods, model and time limit; the runs are executed one after the other (progress, cancel). **B&P vs LNS** table: best objective of each method per instance, gap to the best lower bound known for the instance, time to first solution, winner. Difficulty heatmap (B&P / LNS / best of both), gap vs size, convergence curves of up to 6 runs, sortable table of all runs (method, model, parameters). Filters: corrected model only, one batch. |
 
 A running solve can be **stopped** from the run page: the solver receives `SIGTERM`, finishes its
 current step and still writes its best solution.
@@ -85,8 +86,14 @@ Each run writes into `results/runs/<run id>/`:
   | `lp` | root LP solution: value, train_paths with `flow` |
   | `heuristic` | t, duration, ub_before, ub_after |
   | `strategy` | t, value (`DFS` / `BBF`) |
-  | `end` | status, root_lb, lb, ub, gap, ttfs, nodes, pruned, columns, timings |
+  | `lns` | (LNS) it, t, dur, op, k, frac, lp, lb (neighbourhood bound), result, value, ub, cg_it, dive_steps, weights |
+  | `end` | status, root_lb, lb, ub, gap, ttfs, nodes (B&P nodes / LNS iterations), pruned, columns, timings (+ LNS operator statistics) |
 * `dynamics.csv`: the former LB/UB timeline (kept for compatibility), `stdout.log`, `gurobi_log.txt`, `run.json` (written by the app: instance, parameters, state).
+
+The checker always reports two kinds of violations, whatever the model of the run:
+**node conflicts** (two trains on one node in the same time step) and **head-on crossings**
+(two trains on one link in the same time step, allowed by the original model). See
+`docs/MODEL_AND_METHODS.md` for the link constraint and the LNS.
 
 The backend decodes arc ids by rebuilding the time-space graph in Python
 (`app/backend/tusp/graph.py`, same arc order as `GraphBuilder`); every path is validated

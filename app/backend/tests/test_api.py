@@ -19,7 +19,9 @@ def test_instance_detail_has_layout_for_every_node():
 
 def test_legacy_run_replay():
     sol = client.get("/api/runs/legacy:small_station_sce_1/solution").json()
-    assert sol["objective"] == 1965 and sol["conflicts"] == [] and sol["rejected"] == 0
+    assert sol["objective"] == 1965 and sol["rejected"] == 0
+    kinds = [c["kind"] for c in sol["conflicts"]]
+    assert kinds == ["link"]  # the old model let T0 and T7 cross on r2-1|t3 at t=75
     events = client.get("/api/runs/legacy:small_station_sce_1/events").json()
     assert events[-1]["ev"] == "end"
 

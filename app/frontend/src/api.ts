@@ -9,9 +9,15 @@ export interface Health {
   active_runs: string[];
 }
 
+export type Method = "bp" | "lns";
+export const METHOD_LABEL: Record<Method, string> = { bp: "Branch-and-Price", lns: "LNS" };
+
 export interface RunInfo {
   id: string;
   kind: "v2" | "legacy";
+  method: Method;
+  link_conflicts: boolean;
+  batch: string | null;
   station: string | null;
   scenario: string | null;
   created: string | null;
@@ -22,6 +28,7 @@ export interface RunInfo {
   lb: number | null;
   gap: number | null;
   time_s: number | null;
+  ttfs?: number | null;
   has_solution: boolean;
   has_trace: boolean;
   running?: boolean;
@@ -110,7 +117,10 @@ export interface SolvedTrain {
 }
 
 export interface Conflict {
-  node: string;
+  kind: "node" | "link";
+  node: string;   // node name, or "a–b" for a link
+  from?: string;  // link endpoints
+  to?: string;
   t: number;
   trains: number[];
 }
@@ -137,7 +147,18 @@ export interface LpSolution {
   fractional_trains: number[];
 }
 
+export type LnsOperator = "random" | "time" | "related" | "dual" | "rejected";
+export const LNS_OPERATORS: { id: LnsOperator; label: string; hint: string }[] = [
+  { id: "random", label: "random", hint: "k random trains" },
+  { id: "time", label: "time window", hint: "trains present at the same time as a seed train" },
+  { id: "related", label: "related", hint: "trains sharing tracks with a seed train at the same time" },
+  { id: "dual", label: "dual-guided", hint: "trains whose path the LP relaxation disagrees with most (high reduced cost)" },
+  { id: "rejected", label: "refused", hint: "refused trains + the trains competing with them" },
+];
+
 export interface SolverParams {
+  method: Method;
+  link_conflicts: boolean;
   time_limit_s: number;
   cg_gaps: number[];
   heuristic_every: number;
@@ -148,9 +169,21 @@ export interface SolverParams {
   branching: "auto" | "quantum";
   search: "bbf" | "dfs";
   threads: number;
+  lns_init_frac: number;
+  lns_max_frac: number;
+  lns_mip_time_s: number;
+  lns_root_mip_time_s: number;
+  lns_root_time_frac: number;
+  lns_cg_gap: number;
+  lns_bound_pruning: boolean;
+  lns_operators: LnsOperator[];
+  lns_max_iter: number;
+  seed: number;
 }
 
 export const DEFAULT_PARAMS: SolverParams = {
+  method: "bp",
+  link_conflicts: true,
   time_limit_s: 300,
   cg_gaps: [0, 0.001, 0.005, 0.01],
   heuristic_every: 5,
@@ -161,7 +194,33 @@ export const DEFAULT_PARAMS: SolverParams = {
   branching: "auto",
   search: "bbf",
   threads: 0,
+  lns_init_frac: 0.3,
+  lns_max_frac: 0.7,
+  lns_mip_time_s: 5,
+  lns_root_mip_time_s: 10,
+  lns_root_time_frac: 0.3,
+  lns_cg_gap: 0.001,
+  lns_bound_pruning: true,
+  lns_operators: ["random", "time", "related", "dual", "rejected"],
+  lns_max_iter: 0,
+  seed: 1,
 };
+
+export interface BatchJob {
+  station: string;
+  scenario: string;
+  params: SolverParams;
+  state: "pending" | "running" | "done" | "failed" | "cancelled" | "interrupted";
+  run_id: string | null;
+  error: string | null;
+}
+export interface Batch {
+  id: string;
+  name: string;
+  created: string;
+  jobs: BatchJob[];
+  cancelled: boolean;
+}
 
 // Trace events (see src/solver/BranchAndPriceSolver.cpp)
 export type TraceEvent = { ev: string; t?: number; [k: string]: unknown };
@@ -210,6 +269,14 @@ export const api = {
       body: JSON.stringify({ station, scenario, params }),
     }),
   stop: (id: string) => req(`/api/runs/${enc(id)}/stop`, { method: "POST" }),
+  batches: () => req<Batch[]>("/api/batches"),
+  startBatch: (name: string, jobs: { station: string; scenario: string; params: SolverParams }[]) =>
+    req<{ id: string }>("/api/batches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, jobs }),
+    }),
+  cancelBatch: (id: string) => req(`/api/batches/${enc(id)}/cancel`, { method: "POST" }),
   remove: (id: string) => req(`/api/runs/${enc(id)}`, { method: "DELETE" }),
   liveUrl: (id: string) => {
     const proto = location.protocol === "https:" ? "wss" : "ws";

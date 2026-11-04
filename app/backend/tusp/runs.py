@@ -182,9 +182,15 @@ class RunStore:
                 break
         inst = (meta.get("station"), meta.get("scenario")) if meta.get("station") else guess_instance(d.name)
         stats = sol.get("stats", {})
+        params = meta.get("params") or {}
+        method = params.get("method") or sol.get("method") or (sol.get("stats") or {}).get("method") or "bp"
+        link = params.get("link_conflicts", (sol.get("graph") or {}).get("link_conflicts", False))
         return {
             "id": d.name,
             "kind": "v2",
+            "method": method,
+            "link_conflicts": bool(link),
+            "batch": meta.get("batch"),
             "station": inst[0] if inst else None,
             "scenario": inst[1] if inst else None,
             "created": meta.get("created"),
@@ -195,6 +201,7 @@ class RunStore:
             "lb": (end or {}).get("lb", stats.get("final_lb")),
             "gap": (end or {}).get("gap", stats.get("gap_pct")),
             "time_s": (end or {}).get("t", stats.get("total_time_s")),
+            "ttfs": (end or {}).get("ttfs", stats.get("ttfs_s")),
             "has_solution": bool(sol.get("train_paths")),
             "has_trace": trace.exists(),
         }
@@ -205,6 +212,9 @@ class RunStore:
         return {
             "id": f"legacy:{name}",
             "kind": "legacy",
+            "method": "bp",
+            "link_conflicts": False,
+            "batch": None,
             "station": inst[0] if inst else None,
             "scenario": inst[1] if inst else None,
             "created": None,
@@ -215,6 +225,7 @@ class RunStore:
             "lb": _f(row.get("Final_LB")) if row else None,
             "gap": _f(row.get("Gap_%")) if row else None,
             "time_s": _f(row.get("TotalTime_s")) if row else None,
+            "ttfs": _f(row.get("TTFS_s")) if row else None,
             "has_solution": bool(sol.get("train_paths")),
             "has_trace": False,
         }
@@ -262,6 +273,8 @@ class RunStore:
             raise FileNotFoundError("cannot infer the instance of this run")
         sdir = str(self.scenario_dir(info["station"], info["scenario"]))
         # v2 solver builds the fixed graph; legacy runs may need an old variant.
+        # Graphs are always built with link resources: arc ids do not depend on them and
+        # the checker then also reports head-on crossings of runs of the original model.
         order = [0] if info["kind"] == "v2" else [1, 2, 0]
         last_err = None
         for v in order:

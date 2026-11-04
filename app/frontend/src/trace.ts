@@ -40,6 +40,23 @@ export interface TreeNode {
   rule?: string;
 }
 
+export interface LnsIteration {
+  it: number;
+  t: number;
+  dur: number;
+  op: string;
+  k: number;
+  frac: number;
+  lp: number | null;
+  lb: number | null;
+  result: string;   // improved | no_improvement | pruned | dive_cut | mip_timeout
+  value: number | null;
+  ub: number | null;
+  cg_it: number;
+  dive_steps: number;
+  weights: Record<string, number>;
+}
+
 export interface Incumbent {
   idx: number;
   t: number;
@@ -57,6 +74,8 @@ export interface TraceModel {
   strategy: { t: number; value: string }[];
   nodes: Map<number, TreeNode>;
   lp: { t: number; value: number } | null;
+  lns: LnsIteration[];
+  method: "bp" | "lns";
   tMax: number;
   legacy: boolean;
 }
@@ -72,6 +91,8 @@ export function emptyModel(): TraceModel {
     strategy: [],
     nodes: new Map(),
     lp: null,
+    lns: [],
+    method: "bp",
     tMax: 0,
     legacy: true,
   };
@@ -88,6 +109,25 @@ export function ingest(m: TraceModel, events: TraceEvent[]): TraceModel {
       case "start":
         m.start = e;
         m.legacy = false;
+        m.method = e.method === "lns" ? "lns" : "bp";
+        break;
+      case "lns":
+        m.lns.push({
+          it: e.it as number,
+          t,
+          dur: (e.dur as number) ?? 0,
+          op: String(e.op),
+          k: e.k as number,
+          frac: e.frac as number,
+          lp: num(e.lp),
+          lb: num(e.lb),
+          result: String(e.result),
+          value: num(e.value),
+          ub: num(e.ub),
+          cg_it: (e.cg_it as number) ?? 0,
+          dive_steps: (e.dive_steps as number) ?? 0,
+          weights: (e.weights as Record<string, number>) ?? {},
+        });
         break;
       case "end":
         m.end = e;
@@ -206,4 +246,24 @@ export const SOURCE_LABEL: Record<string, string> = {
   node: "integer B&P node",
   diving: "diving heuristic",
   mip: "restricted-master MIP",
+  "root-mip": "MIP on the root columns",
+};
+
+/** Human label of an incumbent source, including LNS ones ("lns:dual+greedy", "greedy:lp-guided"). */
+export function sourceLabel(src: string): string {
+  if (SOURCE_LABEL[src]) return SOURCE_LABEL[src];
+  if (src.startsWith("greedy")) return `greedy insertion (${src.split(":")[1] ?? "pricing"})`;
+  if (src.startsWith("lns:")) {
+    const [op, how] = src.slice(4).split("+");
+    return `LNS ${op} → ${how === "greedy" ? "greedy repair" : how === "mip" ? "MIP polish" : "price-and-dive"}`;
+  }
+  return src;
+}
+
+export const LNS_RESULT_COLOR: Record<string, string> = {
+  improved: "#22c55e",
+  no_improvement: "#64748b",
+  dive_cut: "#3b82f6",
+  pruned: "#a855f7",
+  mip_timeout: "#f59e0b",
 };

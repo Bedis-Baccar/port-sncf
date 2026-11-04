@@ -2,8 +2,9 @@ import type { EChartsOption } from "echarts";
 import { useMemo, useState } from "react";
 import { fmt, fmtTime } from "../colors";
 import EChart from "../components/EChart";
+import LnsPanel from "../components/LnsPanel";
 import type { TraceModel } from "../trace";
-import { SOURCE_LABEL } from "../trace";
+import { sourceLabel } from "../trace";
 
 interface Props {
   model: TraceModel;
@@ -11,12 +12,15 @@ interface Props {
   tSolve: number;
 }
 
-const SOURCE_SYMBOL: Record<string, string> = { node: "circle", diving: "diamond", mip: "rect" };
+const symbolFor = (src: string) =>
+  src === "node" ? "circle" : src === "diving" ? "diamond" : src === "mip" || src.endsWith("mip") ? "rect"
+    : src.startsWith("greedy") || src.endsWith("+greedy") ? "triangle" : src.startsWith("lns:") ? "diamond" : "circle";
 const AX = { axisLine: { lineStyle: { color: "#33476e" } }, splitLine: { lineStyle: { color: "#16223b" } } };
 
 export default function ConvergenceTab({ model, version, tSolve }: Props) {
   const [xMode, setXMode] = useState<"time" | "nodes">("time");
   const [cgNode, setCgNode] = useState<string>("node:0");
+  const cgKey = model.method === "lns" && cgNode === "node:0" ? "root:0" : cgNode;
 
   const b = useMemo(() => model.bounds.filter((p) => p.t <= tSolve), [model, version, tSolve]); // eslint-disable-line react-hooks/exhaustive-deps
   const last = b.at(-1);
@@ -58,8 +62,8 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
         } : undefined,
       },
       { name: "new incumbent", type: "scatter", color: "#facc15", symbolSize: 11,
-        data: incs.map((i) => ({ value: [xMode === "time" ? i.t : itAt(i.t), i.value], symbol: SOURCE_SYMBOL[i.source] ?? "circle", source: i.source })),
-        tooltip: { trigger: "item", formatter: (p: any) => `new incumbent <b>${fmt(p.value[1])}</b><br/>found by ${SOURCE_LABEL[p.data.source] ?? p.data.source}` } },
+        data: incs.map((i) => ({ value: [xMode === "time" ? i.t : itAt(i.t), i.value], symbol: symbolFor(i.source), source: i.source })),
+        tooltip: { trigger: "item", formatter: (p: any) => `new incumbent <b>${fmt(p.value[1])}</b><br/>found by ${sourceLabel(p.data.source)}` } },
       ...(model.end?.root_lb != null ? [{
         name: "root LP bound", type: "line" as const, symbol: "none", color: "#94a3b8", lineStyle: { type: "dotted" as const },
         data: [[0, model.end.root_lb as number], [xMax, model.end.root_lb as number]],
@@ -90,7 +94,7 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
 
   // A node can be solved several times (dives restart from it): split runs when `it` resets.
   const cgSeries = useMemo(() => {
-    const [ctx, node] = cgNode.split(":");
+    const [ctx, node] = cgKey.split(":");
     const pts = model.cg.filter((c) => c.ctx === ctx && String(c.node) === node && c.t <= tSolve);
     const runs: typeof pts[] = [];
     for (const p of pts) {
@@ -98,7 +102,7 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
       runs.at(-1)!.push(p);
     }
     return runs.at(0) ?? [];
-  }, [model, version, cgNode, tSolve]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [model, version, cgKey, tSolve]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cgOption: EChartsOption = useMemo(() => ({
     grid: [{ left: 70, right: 60, top: 34, height: "46%" }, { left: 70, right: 60, top: "66%", bottom: 34 }],
@@ -145,9 +149,9 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
       // cumulative bands drawn explicitly (ECharts stacking on a value x-axis is unreliable)
       { name: "pricing", type: "line", symbol: "none", areaStyle: { opacity: 0.55 }, color: "#22c55e", data: prof.map((p) => [p.t, (p.t_master ?? 0) + (p.t_pricing ?? 0)]) },
       { name: "master LP", type: "line", symbol: "none", areaStyle: { opacity: 0.85 }, color: "#3b82f6", data: prof.map((p) => [p.t, p.t_master]) },
-      { name: "heuristics (incl. their CG)", type: "line", symbol: "none", lineStyle: { type: "dashed" }, color: "#f59e0b", data: prof.map((p) => [p.t, p.t_heur]) },
+      { name: model.method === "lns" ? "MIP (root + polish)" : "heuristics (incl. their CG)", type: "line", symbol: "none", lineStyle: { type: "dashed" }, color: "#f59e0b", data: prof.map((p) => [p.t, p.t_heur]) },
     ],
-  }), [prof, model.tMax]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [prof, model.tMax, model.method]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const kRootLb = (model.end?.root_lb as number | undefined) ?? model.nodes.get(0)?.history.find((h) => h.status !== "UNPROCESSED")?.lb ?? null;
   const lb = ended ? (model.end!.lb as number) : last?.lb ?? null;
@@ -167,7 +171,7 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
         <div className="kpi"><div className="v" style={{ color: "#38bdf8" }}>{fmt(lb, 1)}</div><div className="l">lower bound</div></div>
         <div className="kpi"><div className="v" style={{ color: "#22c55e" }}>{fmt(ub)}</div><div className="l">best integer</div></div>
         <div className="kpi"><div className="v" style={{ color: "#f59e0b" }}>{gap != null && ub != null ? `${fmt(gap, 2)} %` : "—"}</div><div className="l">gap</div></div>
-        <div className="kpi"><div className="v">{fmt(ended ? (model.end!.nodes as number) : last?.it ?? null)}</div><div className="l">nodes explored</div></div>
+        <div className="kpi"><div className="v">{fmt(ended ? (model.end!.nodes as number) : last?.it ?? null)}</div><div className="l">{model.method === "lns" ? "LNS iterations" : "nodes explored"}</div></div>
         <div className="kpi"><div className="v">{fmt(last?.open ?? null)}</div><div className="l">open nodes</div></div>
         <div className="kpi"><div className="v">{fmt(last?.pool ?? null)}</div><div className="l">columns</div></div>
         <div className="kpi"><div className="v">{fmtTime(model.end?.ttfs as number | undefined ?? incs[0]?.t)}</div><div className="l">first solution</div></div>
@@ -176,7 +180,9 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
       <div className="panel">
         <div className="panel-head">
           <h2>Primal–dual bounds</h2>
-          <span className="muted small">shaded = primal heuristics running · ● node ◆ diving ■ MIP</span>
+          <span className="muted small">{model.method === "lns"
+            ? "LNS: the lower bound is the root LP bound · ▲ greedy repair ◆ price-and-dive ■ MIP"
+            : "shaded = primal heuristics running · ● node ◆ diving ■ MIP"}</span>
           <div className="spacer" />
           <div className="seg">
             <button className={xMode === "time" ? "on" : ""} onClick={() => setXMode("time")}>vs time</button>
@@ -197,15 +203,19 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
         </div>
       </div>
 
+      {model.method === "lns" && <LnsPanel model={model} version={version} tSolve={tSolve} />}
+
       <div className="panel" style={{ marginTop: 14 }}>
         <div className="panel-head">
           <h2>Column generation</h2>
           <span className="muted small">RMP value decreases, Lagrangian bound increases: they meet at the LP optimum (tailing-off at the end)</span>
           <div className="spacer" />
           {cgGroups.length > 0 && (
-            <select value={cgNode} onChange={(e) => setCgNode(e.target.value)}>
+            <select value={cgKey} onChange={(e) => setCgNode(e.target.value)}>
               {cgGroups.map(([k, g]) => (
-                <option key={k} value={k}>{g.ctx === "node" ? `B&P node ${g.node}` : `dive from node ${g.node}`} — {g.n} iterations</option>
+                <option key={k} value={k}>
+                  {g.ctx === "node" ? `B&P node ${g.node}` : g.ctx === "dive" ? `dive from node ${g.node}` : g.ctx === "root" ? "root (all trains)" : `LNS iteration ${g.node}`} — {g.n} iterations
+                </option>
               ))}
             </select>
           )}
@@ -238,7 +248,7 @@ export default function ConvergenceTab({ model, version, tSolve }: Props) {
                     <tr key={i.idx}>
                       <td>{i.idx + 1}</td><td className="num">{i.t.toFixed(2)} s</td><td className="num">{fmt(i.value)}</td>
                       <td className="num">{k ? `−${fmt(((incs[k - 1].value - i.value) / incs[k - 1].value) * 100, 2)} %` : "first"}</td>
-                      <td>{SOURCE_LABEL[i.source] ?? i.source}</td>
+                      <td>{sourceLabel(i.source)}</td>
                     </tr>
                   ))}
                 </tbody>

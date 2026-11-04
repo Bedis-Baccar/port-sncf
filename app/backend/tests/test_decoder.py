@@ -13,6 +13,7 @@ from tusp.solution import VARIANTS, PathError, decode_solution
 
 ROOT = Path(__file__).resolve().parents[3]
 SOLUTIONS = sorted((ROOT / "results" / "solutions").glob("solution_*.json"))
+CROSSINGS: dict[str, int] = {}
 
 
 def scenario_dir(name):
@@ -42,7 +43,10 @@ def test_legacy_solutions_decode(path):
         except PathError:
             continue
         assert sum(t["cost"] for t in decoded["trains"]) == sol["objective_value"]
-        assert decoded["conflicts"] == []
+        # the original model respects node conflicts...
+        assert [c for c in decoded["conflicts"] if c["kind"] == "node"] == []
+        # ...but allows head-on crossings, which the checker now reports
+        CROSSINGS[path.stem] = sum(c["kind"] == "link" for c in decoded["conflicts"])
         for t in decoded["trains"]:
             if not t["rejected"]:
                 assert sorted(t["services_done"]) == sorted(t["required_services"])
@@ -60,3 +64,19 @@ def test_broken_path_is_rejected():
     tp["arc_sequence"] = tp["arc_sequence"][:3] + tp["arc_sequence"][4:]
     with pytest.raises(PathError):
         decode_solution(g, [tp])
+
+
+def test_old_model_crossings_are_all_detected():
+    """89 head-on crossings were counted by hand in the 10 old solutions."""
+    if len(CROSSINGS) < len(SOLUTIONS):
+        for p in SOLUTIONS:
+            test_legacy_solutions_decode(p)
+    assert sum(CROSSINGS.values()) == 89
+
+
+def test_link_resources_do_not_change_arc_ids():
+    inst = load_instance(ROOT / "instances" / "medium station" / "scenario 2")
+    on, off = TimeSpaceGraph(inst, link_conflicts=True), TimeSpaceGraph(inst, link_conflicts=False)
+    assert [(a.type, a.frm, a.to, a.t0, a.t1) for a in on.arcs] == [(a.type, a.frm, a.to, a.t0, a.t1) for a in off.arcs]
+    # one resource per unordered link, used by both directions of every move
+    assert len(on.resource_names) == len(inst.pnodes) + len(inst.plinks)

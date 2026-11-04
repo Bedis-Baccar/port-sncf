@@ -39,7 +39,7 @@ export default function App() {
         {route.page === "home" && <Home health={health} />}
         {route.page === "instance" && <InstancePage station={route.station} scenario={route.scenario} health={health} />}
         {route.page === "run" && <RunPage key={route.id} id={route.id} tab={route.tab} health={health} />}
-        {route.page === "compare" && <ComparePage />}
+        {route.page === "compare" && <ComparePage health={health} />}
       </main>
     </>
   );

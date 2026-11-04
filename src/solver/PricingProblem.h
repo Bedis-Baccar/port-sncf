@@ -39,12 +39,23 @@ public:
         const GlobalStateManager& state_manager
     ) const;
 
+    // Same pricing, restricted to the trains with active[k] != 0 (nullptr = all trains)
+    // and without branching restrictions when state_manager is nullptr. Used by the LNS,
+    // where the trains outside the neighbourhood are fixed and need no pricing.
+    std::pair<std::vector<Column>, std::vector<double>> solve_subset(
+        const std::vector<double>& flow_duals,
+        const std::vector<std::vector<double>>& service_duals,
+        const std::vector<std::vector<double>>& conflict_duals,
+        const GlobalStateManager* state_manager,
+        const std::vector<char>* active
+    ) const;
+
     // Résout le pricing pour UN train spécifique 
     std::pair<Column, double> find_shortest_path_for_train(
         int train_id,
         double pi_k, 
         const std::vector<double>& service_duals_k,
         const std::vector<std::vector<double>>& conflict_duals,
-        const GlobalStateManager& state_manager
+        const GlobalStateManager* state_manager
     ) const;
 };

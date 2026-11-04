@@ -21,6 +21,7 @@ private:
     int num_trains_;
     int num_services_;
     int num_pnodes_;
+    int num_resources_;   // conflict resources: physical nodes (+ links when link conflicts are on)
     int max_time_;
     int time_step_;
     MasterStatus status_;
@@ -77,4 +78,6 @@ public:
     void set_time_limit(double time_limit_second);
     void set_focus_to_finding_sol();
     void set_focus_to_auto();
+    // MIP only: ignore solutions whose objective is not better than `value` (GRB_INFINITY = off)
+    void set_cutoff(double value);
 };

@@ -13,6 +13,7 @@
 #include "SearchTree.h"
 #include "BranchAndPriceSolver.h"
 #include "SolverParams.h"
+#include "LnsSolver.h"
 
 namespace fs = std::filesystem;
 
@@ -43,12 +44,14 @@ int main() {
     // Every convergence knob can be tuned here (see SolverParams.h)
     SolverParams base_params;
     base_params.time_limit_s = 3600.0;
+    base_params.method = "bp";          // "bp" or "lns" (see SolverParams.h for the LNS settings)
+    base_params.link_conflicts = true;  // false = original model (head-on crossings allowed)
 
     fs::create_directories("../results/runs");
 
     // Préparation du fichier de synthèse global
     std::ofstream summary_file("../results/summary_benchmark.csv");
-    summary_file << "Instance,Trains,Arcs,Root_LB,Final_LB,Final_UB,Gap_%,TotalTime_s,TTFS_s,Nodes,MasterTime_s,PricingTime_s,HeuristicsTime_s\n";
+    summary_file << "Instance,Trains,Arcs,Root_LB,Final_LB,Final_UB,Gap_%,TotalTime_s,TTFS_s,Nodes,MasterTime_s,PricingTime_s,HeuristicsTime_s,Method,LinkConflicts\n";
     for (size_t i = 0; i < instance_paths.size(); ++i) {
         const std::string& path = instance_paths[i];
         const std::string& name = instance_name[i];
@@ -62,12 +65,18 @@ int main() {
 
         InstanceParser parser(path);
         InstanceData data = parser.parse();
-        GraphBuilder builder(data);
+        GraphBuilder builder(data, params.link_conflicts);
         TimeSpaceGraph graph = builder.build();
-        BranchAndPriceSolver solver(graph, data.trains, params);
-
-        SolveStatistics stats = solver.solve(name);
-        solver.export_best_solution(params.out_dir + "/solution.json");
+        SolveStatistics stats;
+        if (params.method == "lns") {
+            LnsSolver solver(graph, data.trains, params);
+            stats = solver.solve(name);
+            solver.export_best_solution(params.out_dir + "/solution.json");
+        } else {
+            BranchAndPriceSolver solver(graph, data.trains, params);
+            stats = solver.solve(name);
+            solver.export_best_solution(params.out_dir + "/solution.json");
+        }
 
         summary_file << stats.instance_name << ","
                      << stats.num_trains << ","
@@ -81,7 +90,9 @@ int main() {
                      << stats.explored_nodes << ","
                      << stats.time_in_master_s << ","
                      << stats.time_in_pricing_s << ","
-                     << stats.time_in_heuristics_s << "\n";
+                     << stats.time_in_heuristics_s << ","
+                     << stats.method << ","
+                     << (params.link_conflicts ? 1 : 0) << "\n";
         summary_file.flush();
     }
 

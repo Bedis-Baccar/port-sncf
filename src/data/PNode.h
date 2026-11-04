@@ -17,9 +17,9 @@ private:
 public:
     PNode(int id, std::string n, int t);
 
-    int getID();
-    std::string getName();
-    int getType();
+    int getID() const;
+    std::string getName() const;
+    int getType() const;
 };
 
 /*
@@ -45,7 +45,7 @@ public:
     void addService(bool s) { services.push_back(s); }
     void addNode(int p);
 
-    int getID();
+    int getID() const;
     std::string getName() const;
     bool getIO() const;
     bool getParking() const;

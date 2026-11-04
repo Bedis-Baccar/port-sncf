@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include <vector>
 #include "Node.h"
 #include "Arc.h"
@@ -15,6 +16,10 @@ private:
     int t_s_;             // Pas de temps
     int num_pnodes_;      // Nombre de nœuds physiques
     int num_services_;
+    // Conflict resources = physical nodes [0, num_pnodes) followed by link
+    // resources [num_pnodes, num_conflict_resources) when link conflicts are on.
+    int num_conflict_resources_;
+    std::vector<std::string> conflict_resource_names_;
 public:
 
     TimeSpaceGraph(int time_horizon, int time_step, int num_physical_nodes, int num_services, std::vector<Node> nodes, std::vector<Arc> arcs, std::vector<std::vector<int>> arc_providing_services, std::vector<std::vector<bool>> arc_accessible_by_train, std::vector<int> dummy_arcs);
@@ -30,6 +35,9 @@ public:
     const Arc& get_arc(int id) const;
     int get_nb_pnodes() const {return num_pnodes_;}
     int get_nb_services() const {return num_services_;}
+    int get_nb_conflict_resources() const {return num_conflict_resources_;}
+    void set_conflict_resources(int n, std::vector<std::string> names) { num_conflict_resources_ = n; conflict_resource_names_ = std::move(names); }
+    const std::vector<std::string>& get_conflict_resource_names() const { return conflict_resource_names_; }
     int get_dummy_arc_id(int k) const{return dummy_arcs_[k];}
     const std::vector<int>& get_arcs_providing_service(int service_id) const;
 

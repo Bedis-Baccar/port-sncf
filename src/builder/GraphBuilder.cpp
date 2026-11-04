@@ -6,6 +6,8 @@
 #include "PLink.h"
 #include "param.h"
 #include <algorithm>
+#include <map>
+#include <utility>
 
 void GraphBuilder::compute_time_step()
 {
@@ -104,7 +106,33 @@ void GraphBuilder::build_a_d_arcs()
 }
 
 
-void GraphBuilder::helper_build_shunting_arc(int p_id, int q_id, int l, int t1, int d)
+void GraphBuilder::compute_link_resources()
+{
+    resource_names_.clear();
+    for (const PNode& p : data_.pnodes) {
+        resource_names_.push_back(p.getName());
+    }
+    link_resource_.assign(data_.plinks.size(), -1);
+    if (!link_conflicts_) return;
+    // One resource per UNORDERED pair {p, q}: a link listed in both directions is one track.
+    std::map<std::pair<int, int>, int> pair_to_resource;
+    for (size_t i = 0; i < data_.plinks.size(); ++i) {
+        const PLink& l = data_.plinks[i];
+        std::pair<int, int> key = std::minmax(l.get_origin(), l.get_destination());
+        auto it = pair_to_resource.find(key);
+        if (it == pair_to_resource.end()) {
+            int r = static_cast<int>(resource_names_.size());
+            pair_to_resource[key] = r;
+            resource_names_.push_back(data_.pnodes[key.first].getName() + "|" +
+                                      data_.pnodes[key.second].getName());
+            link_resource_[i] = r;
+        } else {
+            link_resource_[i] = it->second;
+        }
+    }
+}
+
+void GraphBuilder::helper_build_shunting_arc(int p_id, int q_id, int l, int t1, int d, int link_resource)
 {
     int n1 = TimeSpaceGraph::compute_virtual_node_id(p_id, t1, l, t_s_, n_pnodes_);
     int n2 = TimeSpaceGraph::compute_virtual_node_id(q_id, t1 + d, l, t_s_, n_pnodes_);
@@ -126,6 +154,12 @@ void GraphBuilder::helper_build_shunting_arc(int p_id, int q_id, int l, int t1, 
         temp_nodes_[v].addIncArc(a_id);
         temp_arcs_[a_id].add_node(p_id, dt + t1);
     }
+    // Link occupation during the whole move [t1, t1 + d), shared by both directions.
+    if (link_resource >= 0) {
+        for (int dt = 0; dt < d; dt += t_s_) {
+            temp_arcs_[a_id].add_node(link_resource, t1 + dt);
+        }
+    }
     a_id++;
     for(int k = 0; k < data_.trains.size(); k++){
         temp_arcs_accessible_by_train[k].push_back(true);
@@ -140,8 +174,10 @@ void GraphBuilder::build_shunting_arcs()
     int l;
     int d; // shunting duration
 
-    for (const PLink& link : data_.plinks)
+    for (size_t li = 0; li < data_.plinks.size(); ++li)
     {
+        const PLink& link = data_.plinks[li];
+        const int lr = link_resource_[li];
         d = link.get_length();
         p_id = link.get_origin();
         q_id = link.get_destination();
@@ -153,10 +189,10 @@ void GraphBuilder::build_shunting_arcs()
             }
             // Layer 1 arc
             l = 1;
-            helper_build_shunting_arc(p_id, q_id, l, t1, d);
+            helper_build_shunting_arc(p_id, q_id, l, t1, d, lr);
             // Layer 2 arc
             l = 2;
-            helper_build_shunting_arc(q_id, p_id, l, t1, d);
+            helper_build_shunting_arc(q_id, p_id, l, t1, d, lr);
         }
     }
 }
@@ -373,7 +409,7 @@ void GraphBuilder::build_dummy_arcs()
 }
 
 
-GraphBuilder::GraphBuilder(const InstanceData& data):data_(data),n_services_(data.services.size()),n_pnodes_(data.pnodes.size())
+GraphBuilder::GraphBuilder(const InstanceData& data, bool link_conflicts):data_(data),n_services_(data.services.size()),n_pnodes_(data.pnodes.size()),link_conflicts_(link_conflicts)
 {
     temp_nodes_ = {};
     temp_arcs_ = {};
@@ -385,6 +421,7 @@ GraphBuilder::GraphBuilder(const InstanceData& data):data_(data),n_services_(dat
 
 const TimeSpaceGraph GraphBuilder::build(){
     compute_time_step();
+    compute_link_resources();
     build_nodes();
     build_a_d_arcs();
     build_shunting_arcs();
@@ -394,6 +431,8 @@ const TimeSpaceGraph GraphBuilder::build(){
     build_state_transfer_arcs();
     build_dummy_arcs();
 
-    return TimeSpaceGraph(T_, t_s_, n_pnodes_, n_services_, temp_nodes_, temp_arcs_, temp_arcs_providing_services, temp_arcs_accessible_by_train, temp_dummy_arcs_);
+    TimeSpaceGraph graph(T_, t_s_, n_pnodes_, n_services_, temp_nodes_, temp_arcs_, temp_arcs_providing_services, temp_arcs_accessible_by_train, temp_dummy_arcs_);
+    graph.set_conflict_resources(static_cast<int>(resource_names_.size()), resource_names_);
+    return graph;
 }
 

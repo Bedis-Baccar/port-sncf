@@ -9,15 +9,15 @@ PNode::PNode(int id, string n, int t):ID(id),name(n),type(t)
 
 
 // getters
-int PNode::getID()
+int PNode::getID() const
 {
     return ID;
 }
-string PNode::getName()
+string PNode::getName() const
 {
     return name;
 }
-int PNode::getType()
+int PNode::getType() const
 {
     return type;
 }
@@ -35,7 +35,7 @@ void NodeType::addNode(int p)
 }
 
 // getters
-int NodeType::getID()
+int NodeType::getID() const
 {
     return ID;
 }

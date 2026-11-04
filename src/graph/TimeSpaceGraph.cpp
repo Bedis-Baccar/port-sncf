@@ -14,7 +14,8 @@ arcs_(arcs),
 arc_providing_services_(arc_providing_services),
 arc_accessible_by_train_(arc_accessible_by_train),
 dummy_arcs_(dummy_arcs),
-num_services_(num_services)
+num_services_(num_services),
+num_conflict_resources_(num_physical_nodes)
 {}
 
 void TimeSpaceGraph::add_node(const Node& node){

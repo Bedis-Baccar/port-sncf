@@ -2,6 +2,7 @@
 #include "SearchTree.h"
 #include "PricingProblem.h"
 #include "MasterProblem.h"
+#include "SolutionWriter.h"
 #include <map>
 #include <cmath>
 #include <algorithm>
@@ -371,9 +372,13 @@ void BranchAndPriceSolver::run_column_generation(BPNode* node, double terminatio
     const double inherited_lb = node->lower_bound;
     int cg_iter = 0;
 
+    double best_lagrangian = -INF;
     while(true){
-        if (stop_requested()) {
-            return; // node stays PROCESSING, the main loop stops right after
+        if (stop_requested() || time_up()) {
+            // node stays PROCESSING (the main loop stops right after); the best
+            // Lagrangian bound seen so far is still a valid lower bound for it
+            node->lower_bound = std::max(inherited_lb, best_lagrangian);
+            return;
         }
 
         // ---------------- MASTER ----------------
@@ -408,7 +413,8 @@ void BranchAndPriceSolver::run_column_generation(BPNode* node, double terminatio
         const double rmp_value = master_.get_objective_value();
         double lagrangian_lower_bound = rmp_value + std::accumulate(best_reduced_costs.begin(), best_reduced_costs.end(), 0.0);
         double lagrangian_gap = std::abs((rmp_value - lagrangian_lower_bound)/ lagrangian_lower_bound);
-        double node_bound = std::max(inherited_lb, lagrangian_lower_bound);
+        best_lagrangian = std::max(best_lagrangian, lagrangian_lower_bound);
+        double node_bound = std::max(inherited_lb, best_lagrangian);
 
         if (trace_.enabled()) {
             double min_rc = 0.0;
@@ -443,6 +449,25 @@ void BranchAndPriceSolver::run_column_generation(BPNode* node, double terminatio
             break;
         }
 
+#ifdef TUSP_CHECK_REDUCED_COSTS
+        // Debug check: the reduced cost found by the pricing must equal the one
+        // implied by the master's duals and the column's coefficients
+        // (cost - pi_k - sum alpha_ks - sum_{(r,t)} a_rt * mu_rt).
+        for (const Column& col : add_cols) {
+            double rc = col.cost - flow_duals[col.train_id];
+            for (size_t s_id = 0; s_id < col.services.size(); ++s_id) {
+                if (col.services[s_id] && trains_[col.train_id].get_service(s_id)) rc -= service_duals[col.train_id][s_id];
+            }
+            for (int a : col.arc_ids) {
+                for (const auto& [r, t] : graph_.get_arc(a).get_iNodes()) rc -= conflict_duals[r][t / graph_.get_time_step()];
+            }
+            if (std::abs(rc - best_reduced_costs[col.train_id]) > 1e-6 * std::max(1.0, std::abs(rc))) {
+                throw std::runtime_error("Reduced cost mismatch for train " + std::to_string(col.train_id) + ": pricing "
+                    + std::to_string(best_reduced_costs[col.train_id]) + " vs master " + std::to_string(rc));
+            }
+            checked_columns_++;
+        }
+#endif
         for(auto& col : add_cols){
             add_Column(col);
         }
@@ -500,6 +525,12 @@ void BranchAndPriceSolver::trace_node(const BPNode* node, const char* event) con
 
 void BranchAndPriceSolver::update_incumbent(double value, const std::vector<int>& column_ids, const char* source) {
     std::vector<Column> incumbent = column_pool_.get_columns(column_ids);
+    // Integer solution: every selected column is at 1, so the exact objective is the
+    // sum of the (integer) column costs; avoids LP round-off such as 12258.9999962.
+    double exact = 0.0;
+    for (const Column& c : incumbent) exact += c.cost;
+    if (std::abs(exact - value) < 1e-3 * std::max(1.0, std::abs(value))) value = exact;
+    if (value >= tree_.get_best_upper_bound()) return;
     tree_.set_incumbent_solution(value, incumbent);
     std::cout << " * \033[32mNOUVELLE SOLUTION ENTIERE (" << source << ") : " << value << "\033[0m\n";
     if (trace_.enabled()) {
@@ -513,6 +544,7 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
 
     print_log_header();
     start_time_ = std::chrono::steady_clock::now();
+    time_limit_s_ = time_limit_s;
     const std::vector<double>& gap_limits = params_.cg_gaps;
 
     SolveStatistics stats;
@@ -536,15 +568,17 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
         std::string gaps = "[";
         for (size_t i = 0; i < gap_limits.size(); ++i) gaps += (i ? "," : "") + std::to_string(gap_limits[i]);
         gaps += "]";
-        trace_.write(JsonObj().str("ev", "start").str("instance", instance_name)
+        trace_.write(JsonObj().str("ev", "start").str("instance", instance_name).str("method", "bp")
             .integer("trains", trains_.size()).integer("arcs", graph_.get_arcs().size())
             .integer("T", graph_.get_horizon()).integer("t_s", graph_.get_time_step())
-            .raw("params", JsonObj().num("time_limit_s", time_limit_s).raw("cg_gaps", gaps)
+            .raw("params", JsonObj().num("time_limit_s", time_limit_s).str("method", "bp").raw("cg_gaps", gaps)
                 .integer("heuristic_every", params_.heuristic_every).boolean("diving", params_.diving)
                 .num("dive_cg_gap", params_.dive_cg_gap).boolean("mip_heuristic", params_.mip_heuristic)
                 .num("mip_time_s", params_.mip_time_s)
                 .str("branching", params_.branching == BranchingRule::QUANTUM ? "quantum" : "auto")
-                .str("search", params_.start_dfs ? "dfs" : "bbf").integer("threads", params_.threads).dump()));
+                .str("search", params_.start_dfs ? "dfs" : "bbf").integer("threads", params_.threads)
+                .boolean("link_conflicts", params_.link_conflicts)
+                .integer("conflict_rows", static_cast<long long>(graph_.get_nb_conflict_resources()) * (graph_.get_horizon() / graph_.get_time_step() + 1)).dump()));
     }
     if (params_.start_dfs) {
         tree_.set_strategy_DFS();
@@ -616,11 +650,11 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
             print_log_line(iter, current_node->depth, elapsed_s, current_lb, current_ub, current_action);
             auto h_start = std::chrono::steady_clock::now();
             double ub_before = tree_.get_best_upper_bound();
-            if (params_.diving && !stop_requested()) {
+            if (params_.diving && !stop_requested() && !time_up()) {
                 run_diving_heuristic(*current_node);
             }
-            if (params_.mip_heuristic && !stop_requested()) {
-                run_global_mip_heuristic(params_.mip_time_s);
+            if (params_.mip_heuristic && !stop_requested() && !time_up()) {
+                run_global_mip_heuristic(std::min(params_.mip_time_s, std::max(1.0, time_limit_s - elapsed())));
             }
             double h_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - h_start).count();
             time_heuristics_ += h_time;
@@ -628,7 +662,7 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
                 trace_.write(JsonObj().str("ev", "heuristic").num("t", elapsed()).num("duration", h_time)
                     .num("ub_before", ub_before).num("ub_after", tree_.get_best_upper_bound()));
             }
-            if (stop_requested()) continue;   // handled at the top of the loop
+            if (stop_requested() || time_up()) continue;   // handled at the top of the loop
         }
         current_ub = tree_.get_best_upper_bound();
         if (current_ub < INF && stats.time_to_first_sol_s < 0) {
@@ -641,7 +675,10 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
         else if (current_node->depth <= 5) gap_limit = gap_limits[1];
         else if (current_node->depth <= 10) gap_limit = gap_limits[2];
         run_column_generation(current_node, gap_limit);
-        if (stop_requested()) continue;
+        if (stop_requested() || time_up()) {
+            if (current_node->depth == 0) stats.root_lb = current_node->lower_bound;
+            continue;
+        }
 
         if (stats.time_to_first_sol_s < 0 && tree_.get_best_upper_bound() < INF) {
             stats.time_to_first_sol_s = elapsed();
@@ -754,6 +791,9 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
         std::cout << "   └─ Gap Prouvé     : INF\n";
     }
     std::cout << "=======================================================\n\n";
+#ifdef TUSP_CHECK_REDUCED_COSTS
+    std::cout << "[check] reduced costs verified on " << checked_columns_ << " columns\n";
+#endif
 
     return stats;
 }
@@ -815,7 +855,7 @@ void BranchAndPriceSolver::run_diving_heuristic(BPNode base_node) {
 
         // CG rapide (gap relâché)
         run_column_generation(&base_node, params_.dive_cg_gap, "dive");
-        if (stop_requested()) {
+        if (stop_requested() || time_up()) {
             break;
         }
         base_node.status = NodeStatus::UNPROCESSED;
@@ -883,54 +923,8 @@ void BranchAndPriceSolver::run_diving_heuristic(BPNode base_node) {
 }
 
 void BranchAndPriceSolver::export_best_solution(const std::string& filename) const {
-    std::vector<Column> best_sol = tree_.get_incumbent_solution();
-
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "Erreur : Impossible de créer le fichier " << filename << std::endl;
-        return;
-    }
-    out << std::setprecision(12);
-
-    const SolveStatistics& st = last_stats_;
-    JsonObj graph;
-    graph.integer("version", 2).integer("T", graph_.get_horizon()).integer("t_s", graph_.get_time_step())
-         .integer("num_arcs", graph_.get_arcs().size()).integer("num_nodes", graph_.get_nodes().size());
-    JsonObj stats;
-    stats.num("total_time_s", st.total_time_s).num("ttfs_s", st.time_to_first_sol_s)
-         .num("root_lb", st.root_lb).num("final_lb", st.final_lb).num("final_ub", st.final_ub)
-         .num("gap_pct", st.gap_pct).integer("explored_nodes", st.explored_nodes)
-         .integer("pruned_nodes", st.pruned_nodes).integer("columns", st.num_columns)
-         .num("time_master_s", st.time_in_master_s).num("time_pricing_s", st.time_in_pricing_s)
-         .num("time_heuristics_s", st.time_in_heuristics_s);
-
-    out << "{\n";
-    out << "  \"instance\": \"" << JsonObj::escape(st.instance_name) << "\",\n";
-    out << "  \"status\": \"" << (best_sol.empty() || tree_.get_best_upper_bound() >= 1e9 ? std::string("No integer solution found") : st.status) << "\",\n";
-    out << "  \"graph\": " << graph.dump() << ",\n";
-    out << "  \"stats\": " << stats.dump() << ",\n";
-
-    if (best_sol.empty() || tree_.get_best_upper_bound() >= 1e9) {
-        out << "  \"train_paths\": []\n}\n";
-        out.close();
-        return;
-    }
-
-    out << "  \"objective_value\": " << tree_.get_best_upper_bound() << ",\n";
-    out << "  \"num_trains_routed\": " << best_sol.size() << ",\n";
-    out << "  \"train_paths\": [\n";
-    for (size_t i = 0; i < best_sol.size(); ++i) {
-        const Column& col = best_sol[i];
-        out << "    {\"train_id\": " << col.train_id << ", \"cost\": " << col.cost
-            << ", \"arc_sequence\": " << JsonObj::int_array(col.arc_ids) << "}";
-        if (i < best_sol.size() - 1) out << ",";
-        out << "\n";
-    }
-    out << "  ]\n";
-    out << "}\n";
-
-    out.close();
-    std::cout << "Meilleure solution sauvegardée dans : " << filename << std::endl;
+    write_solution_json(filename, graph_, tree_.get_incumbent_solution(), tree_.get_best_upper_bound(),
+                        last_stats_, params_.link_conflicts);
 }
 
 void BranchAndPriceSolver::print_log_header() const {

@@ -17,13 +17,14 @@ MasterProblem::MasterProblem(const TimeSpaceGraph& graph, const vector<Train>& t
     model_ = make_unique<GRBModel>(*env_);
     num_trains_ = trains.size();
     num_pnodes_ = graph.get_nb_pnodes();
+    num_resources_ = graph.get_nb_conflict_resources();
     num_services_ = graph.get_nb_services();
     max_time_ = graph.get_horizon();
     time_step_ = graph.get_time_step();
     flow_constrs_ = vector<GRBConstr>(num_trains_);
     service_constrs_ = vector<vector<GRBConstr>>(num_trains_, vector<GRBConstr>(num_services_));
     service_required_ = vector<vector<bool>>(num_trains_, vector<bool>(num_services_));
-    conflict_constrs_ = vector<vector<GRBConstr>>(num_pnodes_, vector<GRBConstr>(max_time_/time_step_ + 1));
+    conflict_constrs_ = vector<vector<GRBConstr>>(num_resources_, vector<GRBConstr>(max_time_/time_step_ + 1));
     build_initial_model(trains, graph);
 }
 
@@ -56,7 +57,7 @@ void MasterProblem::build_initial_model(const std::vector<Train>& trains, const 
 
 
     // Construction des contraintes de conflits
-    for (int p = 0; p < num_pnodes_; p++)
+    for (int p = 0; p < num_resources_; p++)
     {
         for (int t = 0; time_step_*t <= max_time_; t += 1)
         { 
@@ -109,8 +110,8 @@ std::vector<std::vector<double>> MasterProblem::get_service_duals() const{
 }
 
 std::vector<std::vector<double>> MasterProblem::get_conflict_duals() const{
-    std::vector<std::vector<double>> conflict_duals(num_pnodes_, std::vector<double>(max_time_/time_step_ + 1));
-    for(int p  = 0; p < num_pnodes_; p++){
+    std::vector<std::vector<double>> conflict_duals(num_resources_, std::vector<double>(max_time_/time_step_ + 1));
+    for(int p  = 0; p < num_resources_; p++){
         for(int t = 0; time_step_ * t <= max_time_; t+=1){
             conflict_duals[p][t] = conflict_constrs_[p][t].get(GRB_DoubleAttr_Pi);
         }
@@ -241,6 +242,10 @@ void MasterProblem::set_time_limit(double time_limit_seconds){
 
 void MasterProblem::set_focus_to_finding_sol(){
     model_->set(GRB_IntParam_MIPFocus, 1);
+}
+
+void MasterProblem::set_cutoff(double value){
+    model_->set(GRB_DoubleParam_Cutoff, value);
 }
 
 void MasterProblem::set_focus_to_auto(){

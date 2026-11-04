@@ -16,6 +16,8 @@
 #include "BPNode.h"
 #include "SolverParams.h"
 #include "Trace.h"
+#include "SolveStatistics.h"
+#include "Interrupt.h"
 
 
 struct BranchingDecision {
@@ -47,31 +49,6 @@ enum class SolveStatus{
     INTERRUPTED
 };
 
-// Structure pour stocker les résultats d'une instance
-struct SolveStatistics {
-    std::string instance_name;
-    std::string status;         // OPTIMAL, TIME_LIMIT, INTERRUPTED
-    int num_trains;
-    int num_arcs;
-
-    double total_time_s;
-    double time_to_first_sol_s; // -1 si aucune solution trouvée
-
-    double root_lb;
-    double final_lb;
-    double final_ub;
-    double gap_pct;
-
-    int explored_nodes;
-    int pruned_nodes;
-    int num_columns;
-
-    // Profiling
-    double time_in_master_s;
-    double time_in_pricing_s;
-    double time_in_heuristics_s;
-};
-
 class BranchAndPriceSolver {
 public:
     BranchAndPriceSolver(const TimeSpaceGraph& graph, const std::vector<Train>& trains,
@@ -84,8 +61,8 @@ public:
 
     // Asynchronous stop request (signal handler safe): the solver finishes the
     // current step, then stops and still exports its best solution.
-    static void request_stop() { stop_requested_.store(true); }
-    static bool stop_requested() { return stop_requested_.load(); }
+    static void request_stop() { tusp::request_stop(); }
+    static bool stop_requested() { return tusp::stop_requested(); }
 
 private:
     void run_column_generation(BPNode* node, double termination_gap, const char* context = "node");
@@ -104,6 +81,8 @@ private:
 
     // Trace helpers
     double elapsed() const;
+    bool time_up() const { return elapsed() >= time_limit_s_; }
+    double time_limit_s_ = 1e18;
     std::string paths_json(const std::vector<int>& column_ids, bool with_flow) const;
     void trace_node(const BPNode* node, const char* event) const;
 
@@ -127,7 +106,9 @@ private:
     std::chrono::steady_clock::time_point start_time_;
     mutable Trace trace_;
     SolveStatistics last_stats_{};
+public:
+    long long checked_columns_ = 0;   // debug: columns whose reduced cost was cross-checked
+private:
 
-    static inline std::atomic<bool> stop_requested_{false};
     constexpr static double INF = 1e+9;
 };

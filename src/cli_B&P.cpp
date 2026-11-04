@@ -10,6 +10,7 @@
 #include "GraphBuilder.h"
 #include "TimeSpaceGraph.h"
 #include "BranchAndPriceSolver.h"
+#include "LnsSolver.h"
 #include "SolverParams.h"
 
 namespace fs = std::filesystem;
@@ -25,7 +26,23 @@ void print_usage(const std::string& program_name) {
     std::cout << "  -t, --time <s>            Temps limite en secondes (Defaut : 3600)\n";
     std::cout << "  -o, --out <dir>           Dossier de sortie (Defaut : ../results/runs/<name>)\n";
     std::cout << "      --no-trace            Ne pas ecrire trace.jsonl\n";
-    std::cout << "\nParametres de convergence :\n";
+    std::cout << "\nModele :\n";
+    std::cout << "      --no-link-conflicts   Modele d'origine : autorise deux trains a se croiser\n";
+    std::cout << "                            en sens inverse sur un meme lien (Defaut : interdit)\n";
+    std::cout << "\nMethode :\n";
+    std::cout << "      --method bp|lns       Branch-and-Price exact (Defaut) ou Large Neighbourhood Search\n";
+    std::cout << "\nParametres LNS (--method lns) :\n";
+    std::cout << "      --lns-frac f          Part initiale des trains liberes par voisinage (Defaut : 0.3)\n";
+    std::cout << "      --lns-max-frac f      Part maximale avant redemarrage (Defaut : 0.7)\n";
+    std::cout << "      --lns-mip-time s      Temps du MIP de finition, 0 = sans (Defaut : 5)\n";
+    std::cout << "      --lns-cg-gap g        Gap de CG dans un voisinage (Defaut : 0.001)\n";
+    std::cout << "      --lns-root-mip-time s Temps du MIP sur les colonnes racine (Defaut : 10)\n";
+    std::cout << "      --lns-root-frac f     Part du temps pour la CG racine (Defaut : 0.3)\n";
+    std::cout << "      --lns-ops a,b,...     Operateurs : random,time,related,dual,rejected (Defaut : tous)\n";
+    std::cout << "      --lns-no-prune        N'utilise pas la borne pour elaguer les voisinages\n";
+    std::cout << "      --lns-max-iter n      Nombre max d'iterations, 0 = jusqu'au temps limite\n";
+    std::cout << "      --seed n              Graine aleatoire (Defaut : 1)\n";
+    std::cout << "\nParametres de convergence (B&P ; --cg-gaps a,... donne aussi le gap racine du LNS) :\n";
     std::cout << "      --cg-gaps a,b,c,d     Gaps d'arret de la generation de colonnes\n";
     std::cout << "                            racine, prof.<=5, prof.<=10, au-dela (Defaut : 0,0.001,0.005,0.01)\n";
     std::cout << "      --heur-every <n>      Heuristiques primales tous les n noeuds, 0 = jamais (Defaut : 5)\n";
@@ -41,7 +58,7 @@ void print_usage(const std::string& program_name) {
 }
 
 static void on_signal(int) {
-    BranchAndPriceSolver::request_stop();
+    tusp::request_stop();
 }
 
 static std::vector<double> parse_list(const std::string& s) {
@@ -75,6 +92,7 @@ int main(int argc, char** argv) {
             else if (arg == "-t" || arg == "--time") params.time_limit_s = std::stod(need_value(i, arg));
             else if (arg == "-o" || arg == "--out") params.out_dir = need_value(i, arg);
             else if (arg == "--no-trace") params.trace = false;
+            else if (arg == "--no-link-conflicts") params.link_conflicts = false;
             else if (arg == "--cg-gaps") {
                 params.cg_gaps = parse_list(need_value(i, arg));
                 if (params.cg_gaps.size() != 4) throw std::invalid_argument("--cg-gaps attend 4 valeurs");
@@ -92,6 +110,29 @@ int main(int argc, char** argv) {
             }
             else if (arg == "--dfs") params.start_dfs = true;
             else if (arg == "--threads") params.threads = std::stoi(need_value(i, arg));
+            else if (arg == "--method") {
+                params.method = need_value(i, arg);
+                if (params.method != "bp" && params.method != "lns") throw std::invalid_argument("--method : bp | lns");
+            }
+            else if (arg == "--lns-frac") params.lns_init_frac = std::stod(need_value(i, arg));
+            else if (arg == "--lns-max-frac") params.lns_max_frac = std::stod(need_value(i, arg));
+            else if (arg == "--lns-mip-time") params.lns_mip_time_s = std::stod(need_value(i, arg));
+            else if (arg == "--lns-cg-gap") params.lns_cg_gap = std::stod(need_value(i, arg));
+            else if (arg == "--lns-root-mip-time") params.lns_root_mip_time_s = std::stod(need_value(i, arg));
+            else if (arg == "--lns-root-frac") params.lns_root_time_frac = std::stod(need_value(i, arg));
+            else if (arg == "--lns-no-prune") params.lns_bound_pruning = false;
+            else if (arg == "--lns-max-iter") params.lns_max_iter = std::stoi(need_value(i, arg));
+            else if (arg == "--seed") params.lns_seed = std::stoi(need_value(i, arg));
+            else if (arg == "--lns-ops") {
+                params.lns_operators.clear();
+                std::stringstream ss(need_value(i, arg));
+                std::string op;
+                while (std::getline(ss, op, ',')) {
+                    if (op != "random" && op != "time" && op != "related" && op != "dual" && op != "rejected")
+                        throw std::invalid_argument("operateur LNS inconnu : " + op);
+                    params.lns_operators.push_back(op);
+                }
+            }
             else throw std::invalid_argument("Argument inconnu : " + arg);
         }
     } catch (const std::exception& e) {
@@ -127,12 +168,17 @@ int main(int argc, char** argv) {
 
         InstanceParser parser(file_path);
         InstanceData data = parser.parse();
-        GraphBuilder builder(data);
+        GraphBuilder builder(data, params.link_conflicts);
         TimeSpaceGraph graph = builder.build();
-        BranchAndPriceSolver solver(graph, data.trains, params);
-
-        solver.solve(instance_name);
-        solver.export_best_solution(params.out_dir + "/solution.json");
+        if (params.method == "lns") {
+            LnsSolver solver(graph, data.trains, params);
+            solver.solve(instance_name);
+            solver.export_best_solution(params.out_dir + "/solution.json");
+        } else {
+            BranchAndPriceSolver solver(graph, data.trains, params);
+            solver.solve(instance_name);
+            solver.export_best_solution(params.out_dir + "/solution.json");
+        }
 
     } catch (const std::exception& e) {
         std::cerr << "\n EXCEPTION CRITIQUE DETECTEE :\n";

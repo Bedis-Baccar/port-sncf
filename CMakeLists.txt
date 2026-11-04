@@ -54,6 +54,8 @@ set(
     src/solver/GlobalStateManager.cpp
     src/solver/SearchTree.cpp
     src/solver/BranchAndPriceSolver.cpp
+    src/solver/LnsSolver.cpp
+    src/solver/SolutionWriter.cpp
 )
 
 ################# Libraries #################

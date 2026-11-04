@@ -18,13 +18,17 @@ private:
     const int n_pnodes_;
     const int n_services_;
     int a_id{0}; //Global arc index ie number of already constructed arcs
+    bool link_conflicts_;
+    std::vector<int> link_resource_;          // for each PLink: its conflict resource id (or -1)
+    std::vector<std::string> resource_names_; // names of all conflict resources
+    void compute_link_resources();
     
     void compute_time_step();
     void build_nodes();
 
     void build_a_d_arcs();
 
-    void helper_build_shunting_arc(int p_id, int q_id, int l, int t1, int d);
+    void helper_build_shunting_arc(int p_id, int q_id, int l, int t1, int d, int link_resource);
     void build_shunting_arcs();
 
     void helper_build_service_arc(int p_id, int l, int t1, int d, int s);
@@ -43,7 +47,10 @@ private:
     void build_dummy_arcs();
 
 public:
-    explicit GraphBuilder(const InstanceData& instance_data);
+    // link_conflicts: one capacity-1 resource per physical link {p,q} and time step,
+    // used by shunting moves in BOTH directions (forbids two trains crossing a link
+    // in opposite directions at the same time). false = original model.
+    explicit GraphBuilder(const InstanceData& instance_data, bool link_conflicts = true);
     const TimeSpaceGraph build();
 };
 

@@ -44,13 +44,16 @@ Arguments (optional):
 - `-t, --time`: time limit in seconds (default 3600)
 - `-n, --name`: instance name used in the output (default: the path)
 - `-o, --out`: output directory (default `../results/runs/<name>`)
-- `--cg-gaps a,b,c,d`: column generation stopping gaps at the root, depth <= 5, depth <= 10, deeper (default `0,0.001,0.005,0.01`)
+- `--method bp|lns`: exact Branch-and-Price (default) or Large Neighbourhood Search (see `docs/MODEL_AND_METHODS.md`)
+- `--no-link-conflicts`: original model, where two trains may cross the same link in opposite directions at the same time (by default one capacity-1 resource per link and time step forbids it)
+- `--cg-gaps a,b,c,d`: column generation stopping gaps at the root, depth <= 5, depth <= 10, deeper (default `0,0.001,0.005,0.01`; the first one is also the LNS root gap)
 - `--heur-every n`: primal heuristics every n nodes, 0 = never (default 5)
 - `--no-diving`, `--dive-gap g` (default 0.05): diving heuristic
 - `--no-mip`, `--mip-time s` (default 15): MIP on the restricted master
 - `--branching auto|quantum`: service split with quantum fallback (default) or quantum only
 - `--dfs`: depth-first node selection (default best bound first)
 - `--threads n`: Gurobi threads (default 0 = Gurobi's choice)
+- LNS: `--lns-frac f` (initial share of trains freed, 0.3), `--lns-max-frac f` (0.7), `--lns-mip-time s` (MIP polish per neighbourhood, 5, 0 = off), `--lns-root-mip-time s` (10), `--lns-root-frac f` (share of the time for the root CG, 0.3), `--lns-cg-gap g` (0.001), `--lns-ops random,time,related,dual,rejected`, `--lns-no-prune` (ablation: no bound pruning), `--lns-max-iter n`, `--seed n`
 - `--no-trace`: do not write `trace.jsonl`
 - `-h, --help`
 
@@ -69,6 +72,7 @@ Usage
 
 The following information must be provided in the entry point:
 -The complete list of instance paths as a vector<string> instance_paths
+-The solve method and model in `base_params` (`method = "bp"` or `"lns"`, `link_conflicts`)
 -The complete list of name of the targeted instance to be used as a vector<string> instance_name
 -The desired time limit as a double time_limit_s 
 

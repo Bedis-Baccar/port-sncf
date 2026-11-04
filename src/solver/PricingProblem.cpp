@@ -41,10 +41,15 @@ double PricingProblem::get_arc_reduced_cost(int train_id, const Arc& arc, const 
 
 
 std::pair<std::vector<Column>, std::vector<double>> PricingProblem::solve(const std::vector<double>& flow_duals, const std::vector<std::vector<double>>& service_duals, const std::vector<std::vector<double>>& conflict_duals, const GlobalStateManager& state_manager) const {
+    return solve_subset(flow_duals, service_duals, conflict_duals, &state_manager, nullptr);
+}
+
+std::pair<std::vector<Column>, std::vector<double>> PricingProblem::solve_subset(const std::vector<double>& flow_duals, const std::vector<std::vector<double>>& service_duals, const std::vector<std::vector<double>>& conflict_duals, const GlobalStateManager* state_manager, const std::vector<char>* active) const {
     std::vector<Column> new_columns;
     std::vector<double> best_reduced_costs(trains_.size(), 0.0);
     for (const Train& train : trains_) {
         int k = train.get_ID();
+        if (active && !(*active)[k]) continue;
         // On lance le pricing pour le train k
         auto [opt_col,reduced_cost] = find_shortest_path_for_train(k, flow_duals[k], service_duals[k], conflict_duals, state_manager);
         
@@ -57,7 +62,7 @@ std::pair<std::vector<Column>, std::vector<double>> PricingProblem::solve(const 
     return {new_columns, best_reduced_costs};
 }
 
-std::pair<Column, double> PricingProblem::find_shortest_path_for_train(int train_id, double pi_k, const std::vector<double>& service_duals_k, const std::vector<std::vector<double>>& conflict_duals, const GlobalStateManager& state_manager) const{
+std::pair<Column, double> PricingProblem::find_shortest_path_for_train(int train_id, double pi_k, const std::vector<double>& service_duals_k, const std::vector<std::vector<double>>& conflict_duals, const GlobalStateManager* state_manager) const{
     
     const Train& train = trains_[train_id];
     int ns = service_duals_k.size();
@@ -94,7 +99,7 @@ std::pair<Column, double> PricingProblem::find_shortest_path_for_train(int train
             double d0 = dist_[state_index(node_id, mask)];
             if (d0 >= INF / 2.0) continue; // État inatteignable, on ignore
             for (int a_id : node.getFromArcs()) {
-                if(state_manager.is_arc_forbidden(train_id, a_id)){
+                if(state_manager && state_manager->is_arc_forbidden(train_id, a_id)){
                     continue;
                 }
                 const Arc& arc = graph_.get_arc(a_id);

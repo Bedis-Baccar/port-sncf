@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_PARAMS, api, type Batch, type Health, type Method, type RunInfo, type StationSummary } from "../api";
 import { fmt, fmtTime, trainColor } from "../colors";
 import CompareSimulation from "../components/CompareSimulation";
+import { downloadText, stamp, toCsv } from "../download";
 import EChart from "../components/EChart";
 import { href } from "../router";
 import { buildModel, type TraceModel } from "../trace";
@@ -159,6 +160,31 @@ export default function ComparePage({ health, station, scenario }: { health: Hea
     </th>
   );
 
+  const exportRuns = () => {
+    const header = ["run_id", "station", "scenario", "method", "link_conflicts", "batch", "state", "status", "objective",
+      "lower_bound", "own_gap_pct", "best_known_lb", "gap_to_best_lb_pct", "time_s", "time_to_first_solution_s", "created",
+      "time_limit_s", "params"];
+    const rows = sorted.map((r) => {
+      const lb = r.station ? bestLb.get(key(r)) : undefined;
+      return [r.id, r.station, r.scenario, r.method, r.link_conflicts, r.batch, r.state, r.status, r.objective, r.lb, r.gap,
+        lb, r.objective != null && lb ? (100 * (r.objective - lb)) / lb : null, r.time_s, r.ttfs, r.created,
+        r.params?.time_limit_s, r.params ? JSON.stringify(r.params) : (r.kind === "legacy" ? "old solver" : "")];
+    });
+    downloadText(`tusp_runs_${stamp()}.csv`, toCsv(header, rows));
+  };
+  const exportComparison = () => {
+    const header = ["station", "scenario", "best_known_lb", "bp_run", "bp_objective", "bp_gap_pct", "bp_time_s", "bp_ttfs_s",
+      "lns_run", "lns_objective", "lns_gap_pct", "lns_time_s", "lns_ttfs_s", "winner"];
+    const rows = instKeys.map((k) => {
+      const e = best.get(k)!;
+      const [st, sc] = k.split("|");
+      const win = e.bp && e.lns ? (e.bp.objective! < e.lns.objective! ? "B&P" : e.lns.objective! < e.bp.objective! ? "LNS" : "tie") : "";
+      const part = (r?: RunInfo) => [r?.id, r?.objective, gapTo(r), r?.time_s, r?.ttfs];
+      return [st, sc, bestLb.get(k), ...part(e.bp), ...part(e.lns), win];
+    });
+    downloadText(`tusp_bp_vs_lns_${stamp()}.csv`, toCsv(header, rows));
+  };
+
   return (
     <>
       <div className="row" style={{ marginBottom: 14 }}>
@@ -180,6 +206,8 @@ export default function ComparePage({ health, station, scenario }: { health: Hea
         <div className="panel-head">
           <h2>Branch-and-Price vs LNS</h2>
           <span className="muted small">best run of each method per instance · gap measured to the best lower bound known for the instance · click a row to watch both</span>
+          <div className="spacer" />
+          <button disabled={!instKeys.length} onClick={exportComparison} title="This table, with the filters above">⬇ CSV</button>
         </div>
         {instKeys.length === 0 ? <div className="empty">No finished run with these filters.</div> : (
           <table className="data">
@@ -243,6 +271,12 @@ export default function ComparePage({ health, station, scenario }: { health: Hea
         {picked.length ? <EChart option={overlayOption} height={320} /> : <div className="empty">Select runs to overlay their convergence.</div>}
       </div>
       <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel-head">
+          <h2>All runs</h2>
+          <span className="muted small">{sorted.length} runs{batchFilter ? " in this batch" : ""}</span>
+          <div className="spacer" />
+          <button disabled={!sorted.length} onClick={exportRuns} title="One row per run: results, timings and parameters">⬇ Download CSV</button>
+        </div>
         <table className="data">
           <thead>
             <tr><th />{th("id", "Instance / run")}<th>Method</th><th>Status</th>{th("objective", "Objective", true)}<th className="num">LB</th>{th("gap", "Own gap", true)}{th("time_s", "Time", true)}<th>Params</th><th /></tr>

@@ -36,3 +36,19 @@ def test_params_validation():
     r = client.post("/api/runs", json={"station": "small station", "scenario": "scenario 1",
                                        "params": {"cg_gaps": [0, 1]}})
     assert r.status_code == 422
+
+
+def test_run_download_zip(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    runs = main.paths.runs / "zz_test_run"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "solution.json").write_text('{"train_paths": []}')
+    try:
+        r = client.get("/api/runs/zz_test_run/download")
+        assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+        assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == ["zz_test_run/solution.json"]
+        assert client.get("/api/runs/legacy:small_station_sce_1/download").status_code == 404
+    finally:
+        import shutil
+        shutil.rmtree(runs)

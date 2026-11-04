@@ -204,6 +204,25 @@ def get_lp(run_id: str):
         raise HTTPException(422, str(e))
 
 
+@app.get("/api/runs/{run_id}/download")
+def download_run(run_id: str):
+    """All files of a run (solution, trace, dynamics, logs, run.json) as a ZIP."""
+    import io
+    import zipfile
+    from fastapi.responses import Response
+    try:
+        d = store.run_dir(run_id)
+    except FileNotFoundError as e:
+        _not_found(e)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(d.iterdir()):
+            if f.is_file():
+                z.write(f, f"{run_id}/{f.name}")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{run_id}.zip"'})
+
+
 @app.get("/api/runs/{run_id}/log")
 def get_log(run_id: str, n: int = 300):
     return {"lines": manager.stdout_tail(run_id, n)}

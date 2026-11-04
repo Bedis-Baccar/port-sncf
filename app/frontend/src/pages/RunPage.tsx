@@ -66,6 +66,9 @@ export default function RunPage({ id, tab, health }: { id: string; tab: string; 
               ■ Stop (keeps best solution)
             </button>
           )}
+          {!running && info.kind === "v2" && (
+            <a className="btn" href={`/api/runs/${encodeURIComponent(id)}/download`} title="solution.json, trace.jsonl, dynamics.csv, logs, run.json">⬇ Files (ZIP)</a>
+          )}
           {!running && info.station && <button onClick={() => setRerun(true)}>↻ Run again…</button>}
           {!running && info.kind === "v2" && (
             <button className="ghost" title="Delete this run" onClick={async () => {

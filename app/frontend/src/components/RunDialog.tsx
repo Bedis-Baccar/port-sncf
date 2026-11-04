@@ -8,6 +8,7 @@ interface Props {
   initial?: SolverParams | null;
   solverAvailable: boolean;
   onClose: () => void;
+  initialMode?: "bp" | "lns" | "both";
 }
 
 const BP_PRESETS: { name: string; hint: string; p: Partial<SolverParams> }[] = [
@@ -24,24 +25,45 @@ const LNS_PRESETS: { name: string; hint: string; p: Partial<SolverParams> }[] = 
   { name: "No bound", hint: "ablation: never prune neighbourhoods by their bound", p: { lns_bound_pruning: false } },
 ];
 
-/** Dialog that starts a solve: method, model and (optionally) every convergence parameter. */
-export default function RunDialog({ station, scenario, initial, solverAvailable, onClose }: Props) {
+const BP_KEYS: (keyof SolverParams)[] = ["cg_gaps", "heuristic_every", "diving", "dive_cg_gap", "mip_heuristic", "mip_time_s", "branching", "search", "threads"];
+const LNS_KEYS: (keyof SolverParams)[] = ["lns_init_frac", "lns_max_frac", "lns_mip_time_s", "lns_root_mip_time_s", "lns_root_time_frac", "lns_cg_gap", "lns_bound_pruning", "lns_operators", "lns_max_iter", "seed"];
+const pick = (keys: (keyof SolverParams)[]) => Object.fromEntries(keys.map((k) => [k, DEFAULT_PARAMS[k]])) as Partial<SolverParams>;
+
+type Mode = "bp" | "lns" | "both";
+
+/** Dialog that starts a solve (B&P, LNS, or both as a benchmark): method, model and every parameter. */
+export default function RunDialog({ station, scenario, initial, solverAvailable, onClose, initialMode }: Props) {
   const [p, setP] = useState<SolverParams>({ ...DEFAULT_PARAMS, ...(initial ?? {}) });
+  const [mode, setMode] = useState<Mode>(initialMode ?? initial?.method ?? "bp");
   const [advanced, setAdvanced] = useState(!!initial);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const set = <K extends keyof SolverParams>(k: K, v: SolverParams[K]) => setP((o) => ({ ...o, [k]: v }));
   const setGap = (i: number, v: number) => setP((o) => ({ ...o, cg_gaps: o.cg_gaps.map((g, j) => (j === i ? v : g)) }));
-  const lns = p.method === "lns";
+  const showBp = mode !== "lns";
+  const showLns = mode !== "bp";
+
+  const paramsFor = (method: "bp" | "lns"): SolverParams => {
+    const base = advanced ? p : { ...DEFAULT_PARAMS, link_conflicts: p.link_conflicts, time_limit_s: p.time_limit_s };
+    return { ...base, method };
+  };
 
   const submit = async () => {
     setBusy(true);
     setErr(null);
     try {
-      const base = { ...DEFAULT_PARAMS, method: p.method, link_conflicts: p.link_conflicts, time_limit_s: p.time_limit_s };
-      const { id } = await api.start(station, scenario, advanced ? p : base);
-      onClose();
-      navigate(href.run(id, "convergence"));
+      if (mode === "both") {
+        await api.startBatch(`${station} · ${scenario} — B&P vs LNS`, [
+          { station, scenario, params: paramsFor("bp") },
+          { station, scenario, params: paramsFor("lns") },
+        ]);
+        onClose();
+        navigate(href.compare(station, scenario));
+      } else {
+        const { id } = await api.start(station, scenario, paramsFor(mode));
+        onClose();
+        navigate(href.run(id, "convergence"));
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -67,19 +89,23 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
         )}
 
         <div className="method-pick">
-          <button className={!lns ? "on" : ""} onClick={() => set("method", "bp")}>
+          <button className={mode === "bp" ? "on" : ""} onClick={() => setMode("bp")}>
             <b>Branch-and-Price</b>
             <span>exact: proves optimality (or a gap) by exploring a search tree</span>
           </button>
-          <button className={lns ? "on" : ""} onClick={() => set("method", "lns")}>
+          <button className={mode === "lns" ? "on" : ""} onClick={() => setMode("lns")}>
             <b>Large Neighbourhood Search</b>
             <span>heuristic: repeatedly frees a few trains and re-optimises them with the pricing</span>
+          </button>
+          <button className={mode === "both" ? "on" : ""} onClick={() => setMode("both")}>
+            <b>Both · benchmark</b>
+            <span>B&P then LNS, same time limit and model, then compare them side by side on the station</span>
           </button>
         </div>
 
         <div className="form">
           <label className="field">
-            Time limit (seconds)
+            Time limit (seconds){mode === "both" ? " per method" : ""}
             <input type="number" min={1} step={10} value={p.time_limit_s} onChange={(e) => set("time_limit_s", +e.target.value)} />
           </label>
           <label className="check" title="One capacity-1 resource per physical link and time step, used by moves in both directions">
@@ -91,16 +117,17 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
           )}
           <label className="check full">
             <input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} />
-            <span>Tune {lns ? "LNS" : "convergence"} parameters</span>
+            <span>Tune {mode === "lns" ? "LNS" : mode === "bp" ? "convergence" : "B&P and LNS"} parameters</span>
           </label>
         </div>
 
-        {advanced && !lns && (
-          <div className="adv">
+        {advanced && showBp && (
+          <div className="adv" style={{ marginBottom: 12 }}>
+            {mode === "both" && <h2 style={{ marginBottom: 8 }}>Branch-and-Price</h2>}
             <div className="row" style={{ marginBottom: 10 }}>
               <span className="muted small">Presets:</span>
               {BP_PRESETS.map((pr) => (
-                <button key={pr.name} title={pr.hint} onClick={() => setP({ ...DEFAULT_PARAMS, method: "bp", link_conflicts: p.link_conflicts, time_limit_s: p.time_limit_s, ...pr.p })}>
+                <button key={pr.name} title={pr.hint} onClick={() => setP((o) => ({ ...o, ...pick(BP_KEYS), ...pr.p }))}>
                   {pr.name}
                 </button>
               ))}
@@ -168,12 +195,13 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
           </div>
         )}
 
-        {advanced && lns && (
+        {advanced && showLns && (
           <div className="adv">
+            {mode === "both" && <h2 style={{ marginBottom: 8 }}>LNS</h2>}
             <div className="row" style={{ marginBottom: 10 }}>
               <span className="muted small">Presets:</span>
               {LNS_PRESETS.map((pr) => (
-                <button key={pr.name} title={pr.hint} onClick={() => setP({ ...DEFAULT_PARAMS, method: "lns", link_conflicts: p.link_conflicts, time_limit_s: p.time_limit_s, ...pr.p })}>
+                <button key={pr.name} title={pr.hint} onClick={() => setP((o) => ({ ...o, ...pick(LNS_KEYS), ...pr.p }))}>
                   {pr.name}
                 </button>
               ))}
@@ -254,8 +282,9 @@ export default function RunDialog({ station, scenario, initial, solverAvailable,
         {err && <div className="banner bad" style={{ marginTop: 12 }}><span>✕</span><div className="small">{err}</div></div>}
         <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
           <button className="ghost" onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={busy || !solverAvailable || (lns && p.lns_operators.length === 0)} onClick={submit}>
-            {busy ? <span className="spinner" /> : "▶"} Start {lns ? "LNS" : "Branch-and-Price"}
+          {mode === "both" && <span className="muted small" style={{ marginRight: "auto" }}>2 runs, one after the other: up to {Math.round((2 * p.time_limit_s) / 60)} min</span>}
+          <button className="primary" disabled={busy || !solverAvailable || (showLns && p.lns_operators.length === 0)} onClick={submit}>
+            {busy ? <span className="spinner" /> : "▶"} {mode === "both" ? "Benchmark both" : `Start ${mode === "lns" ? "LNS" : "Branch-and-Price"}`}
           </button>
         </div>
       </div>

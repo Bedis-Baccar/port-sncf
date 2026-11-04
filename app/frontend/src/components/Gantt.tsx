@@ -5,8 +5,11 @@ import { ACTIVITY_COLOR, serviceColor, trainColor } from "../colors";
 import { useWidth } from "../useWidth";
 
 export interface GanttRow {
-  id: number;
+  id: number;          // train id (colour, selection)
+  key?: string;        // unique row key when a train has several rows
   label: string;
+  labelColor?: string;
+  separator?: boolean; // draw a line above the row
   a_t: number;
   d_t: number;
   segments: Segment[];
@@ -56,11 +59,12 @@ export default function Gantt({ inst, rows, T, t, onSeek, selected = null, onSel
           const sel = selected === r.id;
           const dim = selected !== null && !sel;
           return (
-            <g key={r.id} opacity={dim ? 0.35 : 1} style={{ cursor: onSelect ? "pointer" : "default" }}
+            <g key={r.key ?? r.id} opacity={dim ? 0.35 : 1} style={{ cursor: onSelect ? "pointer" : "default" }}
               onClick={(ev) => { if (onSelect) { ev.stopPropagation(); onSelect(sel ? null : r.id); } }}>
               {sel && <rect x={0} y={y0} width={width} height={rowHeight} fill="rgba(59,130,246,0.12)" />}
+              {r.separator && <line x1={0} x2={width} y1={y0} y2={y0} stroke="#22314f" />}
               <rect x={6} y={y0 + rowHeight / 2 - 4} width={8} height={8} rx={2} fill={trainColor(r.id)} />
-              <text x={18} y={y0 + rowHeight / 2 + 4} fontSize={11} fill={r.rejected ? "#fca5a5" : "#cbd5e1"}>{r.label}</text>
+              <text x={18} y={y0 + rowHeight / 2 + 4} fontSize={11} fill={r.labelColor ?? (r.rejected ? "#fca5a5" : "#cbd5e1")}>{r.label}</text>
               {/* stay window */}
               <rect x={x(r.a_t)} y={y0 + 2} width={Math.max(1, x(r.d_t) - x(r.a_t))} height={rowHeight - 4} rx={3}
                 fill={r.rejected ? "url(#hatch)" : "none"} stroke={r.rejected ? "#ef4444" : "#334766"} strokeDasharray={r.rejected ? undefined : "3 2"} />

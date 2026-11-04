@@ -150,7 +150,7 @@ pre.console { background: #070c18; border: 1px solid var(--border); border-radiu
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.method-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.method-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
 .method-pick button { flex-direction: column; align-items: flex-start; text-align: left; gap: 3px; padding: 10px 12px; }
 .method-pick button span { font-size: 12px; color: var(--muted); line-height: 1.35; }
 .method-pick button.on { border-color: var(--accent); background: rgba(59, 130, 246, 0.12); }

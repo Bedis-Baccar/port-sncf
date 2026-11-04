@@ -14,7 +14,7 @@ export default function InstancePage({ station, scenario, health }: { station: s
   const [err, setErr] = useState<string | null>(null);
   const [edit, setEdit] = useState(false);
   const [pending, setPending] = useState<Instance["layout"] | null>(null);
-  const [dialog, setDialog] = useState(false);
+  const [dialog, setDialog] = useState<false | "bp" | "both">(false);
 
   const load = () => {
     api.instance(station, scenario).then(setInst).catch((e) => setErr(e.message));
@@ -51,7 +51,8 @@ export default function InstancePage({ station, scenario, health }: { station: s
           <h1 style={{ textTransform: "capitalize" }}>{station} · {scenario}</h1>
         </div>
         <div className="right row">
-          <button className="primary" onClick={() => setDialog(true)}>⚙ Run solver</button>
+          <button onClick={() => setDialog("both")} title="Run Branch-and-Price and LNS with the same settings, then compare them side by side">⚖ B&P vs LNS</button>
+          <button className="primary" onClick={() => setDialog("bp")}>⚙ Run solver</button>
         </div>
       </div>
 
@@ -137,14 +138,22 @@ export default function InstancePage({ station, scenario, health }: { station: s
       </div>
 
       <div className="panel" style={{ marginTop: 14 }}>
-        <div className="panel-head"><h2>Runs on this instance</h2></div>
+        <div className="panel-head">
+          <h2>Runs on this instance</h2>
+          <div className="spacer" />
+          {runs.filter((r) => r.has_solution).length >= 2 && (
+            <a className="btn" href={href.compare(station, scenario)}>▶ Watch runs side by side</a>
+          )}
+        </div>
         {runs.length === 0 ? <div className="muted">No run yet.</div> : (
           <table className="data">
-            <thead><tr><th>Run</th><th>Status</th><th className="num">Objective</th><th className="num">LB</th><th className="num">Gap</th><th className="num">Time</th><th /></tr></thead>
+            <thead><tr><th>Run</th><th>Method</th><th>Status</th><th className="num">Objective</th><th className="num">LB</th><th className="num">Gap</th><th className="num">Time</th><th /></tr></thead>
             <tbody>
               {runs.map((r) => (
                 <tr key={r.id}>
-                  <td className="mono">{r.id}</td><td>{statusChip(r)}</td>
+                  <td className="mono">{r.id}</td>
+                  <td><span className="chip method">{r.method === "lns" ? "LNS" : "B&P"}</span>{!r.link_conflicts && <span className="chip neutral" style={{ marginLeft: 4 }}>original</span>}</td>
+                  <td>{statusChip(r)}</td>
                   <td className="num">{fmt(r.objective)}</td><td className="num">{fmt(r.lb, 1)}</td>
                   <td className="num">{r.gap != null ? `${fmt(r.gap, 2)} %` : "—"}</td><td className="num">{fmtTime(r.time_s)}</td>
                   <td><a href={href.run(r.id)}>open →</a></td>
@@ -154,7 +163,8 @@ export default function InstancePage({ station, scenario, health }: { station: s
           </table>
         )}
       </div>
-      {dialog && <RunDialog station={station} scenario={scenario} solverAvailable={!!health?.solver_available} onClose={() => setDialog(false)} />}
+      {dialog && <RunDialog station={station} scenario={scenario} solverAvailable={!!health?.solver_available}
+        initialMode={dialog === "both" ? "both" : undefined} onClose={() => setDialog(false)} />}
     </>
   );
 }

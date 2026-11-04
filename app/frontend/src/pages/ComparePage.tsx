@@ -2,6 +2,7 @@ import type { EChartsOption } from "echarts";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_PARAMS, api, type Batch, type Health, type Method, type RunInfo, type StationSummary } from "../api";
 import { fmt, fmtTime, trainColor } from "../colors";
+import CompareSimulation from "../components/CompareSimulation";
 import EChart from "../components/EChart";
 import { href } from "../router";
 import { buildModel, type TraceModel } from "../trace";
@@ -13,7 +14,7 @@ const AX = { axisLine: { lineStyle: { color: "#33476e" } }, splitLine: { lineSty
 const key = (r: { station: string | null; scenario: string | null }) => `${r.station}|${r.scenario}`;
 const methodName = (m: Method) => (m === "lns" ? "LNS" : "B&P");
 
-export default function ComparePage({ health }: { health: Health | null }) {
+export default function ComparePage({ health, station, scenario }: { health: Health | null; station?: string; scenario?: string }) {
   const [runs, setRuns] = useState<RunInfo[]>([]);
   const [stations, setStations] = useState<StationSummary[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -23,6 +24,14 @@ export default function ComparePage({ health }: { health: Health | null }) {
   const [view, setView] = useState<View>("best");
   const [linkOnly, setLinkOnly] = useState(true);
   const [batchFilter, setBatchFilter] = useState<string>("");
+  const [sim, setSim] = useState<[string | null, string | null]>([station ?? null, scenario ?? null]);
+  const showSim = (st: string, sc: string, scroll = true) => {
+    setSim([st, sc]);
+    if (scroll) setTimeout(() => document.getElementById("side-by-side")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  };
+  useEffect(() => {
+    if (station && scenario) showSim(station, scenario);
+  }, [station, scenario]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reload = () => {
     api.runs().then(setRuns);
@@ -170,7 +179,7 @@ export default function ComparePage({ health }: { health: Health | null }) {
       <div className="panel" style={{ marginTop: 14 }}>
         <div className="panel-head">
           <h2>Branch-and-Price vs LNS</h2>
-          <span className="muted small">best run of each method per instance · gap measured to the best lower bound known for the instance</span>
+          <span className="muted small">best run of each method per instance · gap measured to the best lower bound known for the instance · click a row to watch both</span>
         </div>
         {instKeys.length === 0 ? <div className="empty">No finished run with these filters.</div> : (
           <table className="data">
@@ -187,14 +196,15 @@ export default function ComparePage({ health }: { health: Health | null }) {
                 const win = bp && ln ? (bp.objective! < ln.objective! ? "B&P" : ln.objective! < bp.objective! ? "LNS" : "tie") : null;
                 const cell = (r?: RunInfo) => r ? (
                   <>
-                    <td className="num"><a href={href.run(r.id)}>{fmt(r.objective)}</a></td>
+                    <td className="num"><a href={href.run(r.id)} onClick={(e) => e.stopPropagation()}>{fmt(r.objective)}</a></td>
                     <td className="num">{fmt(gapTo(r), 2)} %</td>
                     <td className="num">{fmtTime(r.ttfs ?? null)}</td>
                   </>
                 ) : <><td className="num muted">—</td><td /><td /></>;
                 return (
-                  <tr key={k}>
-                    <td style={{ textTransform: "capitalize" }}>{st} · {sc}</td>
+                  <tr key={k} style={{ cursor: "pointer", background: sim[0] === st && sim[1] === sc ? "rgba(59,130,246,0.08)" : undefined }}
+                    title="Watch both runs side by side" onClick={() => showSim(st, sc)}>
+                    <td style={{ textTransform: "capitalize" }}>▶ {st} · {sc}</td>
                     <td className="num">{fmt(bestLb.get(k) ?? null, 1)}</td>
                     {cell(bp)}{cell(ln)}
                     <td>{win && <span className={`chip ${win === "tie" ? "neutral" : win === "LNS" ? "method" : "info"}`}>{win}</span>}</td>
@@ -204,6 +214,10 @@ export default function ComparePage({ health }: { health: Health | null }) {
             </tbody>
           </table>
         )}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <CompareSimulation runs={runs} batches={batches} station={sim[0]} scenario={sim[1]} onInstance={(st, sc) => showSim(st, sc, false)} />
       </div>
 
       <div className="grid cols-2" style={{ marginTop: 14 }}>

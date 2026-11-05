@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <cmath>
 #include <vector>
 #include <queue>
 #include <fstream>
@@ -84,7 +85,7 @@ int main() {
                      << stats.root_lb << ","
                      << (stats.final_lb > -1e9 ? std::to_string(stats.final_lb) : "") << ","
                      << (stats.final_ub < 1e9 ? std::to_string(stats.final_ub) : "") << ","
-                     << std::max(0.0, stats.gap_pct) << ","
+                     << (std::isnan(stats.gap_pct) ? std::string() : std::to_string(stats.gap_pct)) << ","
                      << stats.total_time_s << ","
                      << stats.time_to_first_sol_s << ","
                      << stats.explored_nodes << ","

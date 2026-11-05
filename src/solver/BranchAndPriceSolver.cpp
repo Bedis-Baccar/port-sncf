@@ -609,7 +609,7 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
 
         double current_lb = tree_.get_best_lower_bound();
         double current_ub = tree_.get_best_upper_bound();
-        double current_gap = (current_ub < INF && current_lb > -INF && current_lb != 0) ? ((current_ub - current_lb) / current_lb * 100.0) : NAN;
+        double current_gap = (current_ub < INF && current_lb > 0) ? ((current_ub - current_lb) / current_lb * 100.0) : NAN;
 
         log_file << elapsed_s << "," << iter << "," << column_pool_.size() << ","
                  << (current_lb > -INF ? std::to_string(current_lb) : "") << "," << (current_ub < INF ? std::to_string(current_ub) : "") << ","
@@ -739,8 +739,12 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
     stats.total_time_s = elapsed();
     stats.final_lb = tree_.get_best_lower_bound();
     stats.final_ub = tree_.get_best_upper_bound();
-    stats.gap_pct = (stats.final_ub < 1e9 && stats.final_lb > -1e9 && stats.final_lb != 0)
-               ? ((stats.final_ub - stats.final_lb) / stats.final_lb * 100.0) : 0.0;
+    // every cost is >= 0: a negative Lagrangian bound (unfinished CG) is replaced by 0,
+    // and the gap is undefined (NaN -> null in the trace) without a positive bound
+    stats.root_lb = std::max(0.0, stats.root_lb);
+    stats.final_lb = std::max(0.0, stats.final_lb);
+    stats.gap_pct = (stats.final_ub < 1e9 && stats.final_lb > 0)
+               ? std::max(0.0, (stats.final_ub - stats.final_lb) / stats.final_lb * 100.0) : NAN;
     stats.explored_nodes = iter;
     stats.num_columns = column_pool_.size();
     stats.time_in_master_s = time_master_;
@@ -785,7 +789,8 @@ SolveStatistics BranchAndPriceSolver::solve(double time_limit_s, const std::stri
     std::cout << "   ├─ LB Finale      : " << stats.final_lb << "\n";
     if (stats.final_ub < 1e9) {
         std::cout << "   ├─ UB Finale      : " << stats.final_ub << "\n";
-        std::cout << "   └─ Gap Prouvé     : " << std::max(0.0, stats.gap_pct) << " %\n";
+        if (std::isnan(stats.gap_pct)) std::cout << "   └─ Gap Prouvé     : indefini (LB <= 0 : racine non convergee)\n";
+        else std::cout << "   └─ Gap Prouvé     : " << stats.gap_pct << " %\n";
     } else {
         std::cout << "   ├─ UB Finale      : INF (Aucune solution entière trouvée)\n";
         std::cout << "   └─ Gap Prouvé     : INF\n";

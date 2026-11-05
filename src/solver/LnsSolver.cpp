@@ -96,7 +96,9 @@ LnsSolver::CgResult LnsSolver::root_column_generation(double gap) {
     double best_rmp = INF;
     int last_improvement = 0;
     for (int it = 0; it < max_iterations; ++it) {
-        if (tusp::stop_requested() || time_up()) { r.interrupted = true; return r; }
+        // at least one iteration (the duals are needed by the destroy operators), even when
+        // the greedy start already used the root budget
+        if (tusp::stop_requested() || (it > 0 && time_up())) { r.interrupted = true; return r; }
         auto t0 = std::chrono::steady_clock::now();
         master_.solve();
         if (master_.is_interrupted()) { tusp::request_stop(); r.interrupted = true; return r; }
@@ -700,7 +702,9 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
         root.interrupted = false;
         std::cout << "Racine interrompue (budget de temps) : borne partielle valide\n";
     }
-    root_lb_ = root.lb;
+    // every cost is >= 0, so 0 is a valid bound: an interrupted root CG can give a
+    // negative Lagrangian bound (z_RMP + sum of very negative reduced costs)
+    root_lb_ = std::max(0.0, root.lb);
     stats_.root_lb = root_lb_;
     std::cout << "Racine : LP " << root.lp << ", borne " << root_lb_ << " (" << root.iterations
               << " iterations de CG, " << pool_.size() << " colonnes)\n";
@@ -860,7 +864,8 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
     stats_.time_to_first_sol_s = ttfs_;
     stats_.final_lb = root_lb_;
     stats_.final_ub = ub_;
-    stats_.gap_pct = (root_lb_ > 0 && ub_ < INF) ? std::max(0.0, (ub_ - root_lb_) / root_lb_ * 100.0) : 0.0;
+    // gap undefined (NaN -> null in the trace) without a positive bound or a solution
+    stats_.gap_pct = (root_lb_ > 0 && ub_ < INF) ? std::max(0.0, (ub_ - root_lb_) / root_lb_ * 100.0) : NAN;
     stats_.explored_nodes = it;
     stats_.pruned_nodes = pruned_count;
     stats_.num_columns = pool_.size();
@@ -896,7 +901,8 @@ SolveStatistics LnsSolver::solve(const std::string& instance_name) {
               << dive_steps_ << " fixations de plongee)\n";
     std::cout << "   ├─ Borne (racine)  : " << root_lb_ << "\n";
     std::cout << "   ├─ Meilleure sol.  : " << ub_ << "\n";
-    std::cout << "   └─ Gap             : " << stats_.gap_pct << " %\n";
+    if (std::isnan(stats_.gap_pct)) std::cout << "   └─ Gap             : indefini (borne racine <= 0 : racine non convergee)\n";
+    else std::cout << "   └─ Gap             : " << stats_.gap_pct << " %\n";
     for (auto* ops : {&dops_, &rops_})
         for (auto& o : *ops)
             std::cout << "      " << std::setw(11) << o.name << " essais " << std::setw(4) << o.tries << " meilleure "

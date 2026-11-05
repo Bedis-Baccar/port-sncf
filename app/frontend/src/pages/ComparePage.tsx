@@ -62,12 +62,17 @@ export default function ComparePage({ health, station, scenario }: { health: Hea
     [runs, linkOnly, batchFilter],
   );
 
-  // best lower bound known per instance (any method: B&P improves it, LNS only has the root bound)
+  // best lower bound known per instance (any method: B&P improves it, LNS only has the root bound).
+  // Taken from every run, even one without a solution (a B&P stopped at the root still has a bound);
+  // bounds <= 0 carry no information (all costs are >= 0) and would give meaningless gaps.
   const bestLb = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of pool) if (r.lb != null) m.set(key(r), Math.max(m.get(key(r)) ?? -Infinity, r.lb));
+    for (const r of runs) {
+      if (r.lb == null || r.lb <= 0 || !r.station || (linkOnly && !r.link_conflicts)) continue;
+      m.set(key(r), Math.max(m.get(key(r)) ?? 0, r.lb));
+    }
     return m;
-  }, [pool]);
+  }, [runs, linkOnly]);
 
   // best run per instance and method
   const best = useMemo(() => {
@@ -85,7 +90,8 @@ export default function ComparePage({ health, station, scenario }: { health: Hea
   const gapTo = (r: RunInfo | undefined) => {
     if (!r || r.objective == null) return null;
     const lb = bestLb.get(key(r));
-    return lb ? (100 * (r.objective - lb)) / lb : r.gap;
+    if (lb) return (100 * (r.objective - lb)) / lb;
+    return r.lb != null && r.lb > 0 ? r.gap : null;   // no usable bound: gap unknown
   };
   const pickView = (e: Partial<Record<Method, RunInfo>>) =>
     view === "best" ? [e.bp, e.lns].filter(Boolean).sort((a, b) => a!.objective! - b!.objective!)[0] : e[view];

@@ -1,0 +1,404 @@
+% Projet SNCF (TUSP) : Branch-and-Price, ALNS et apport de l'IA agentique
+% Compilation : pdflatex main.tex (deux fois)
+\documentclass[aspectratio=169,9pt]{beamer}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[scaled=0.92]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,array}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,shapes.geometric}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{xcolor}
+
+% ------------------------------------------------------------------ couleurs
+\definecolor{navy}{HTML}{0B1F3A}
+\definecolor{ink}{HTML}{1E293B}
+\definecolor{mute}{HTML}{64748B}
+\definecolor{line}{HTML}{CBD5E1}
+\definecolor{acc}{HTML}{1D4ED8}
+\definecolor{acc2}{HTML}{0891B2}
+\definecolor{ok}{HTML}{15803D}
+\definecolor{warn}{HTML}{C2410C}
+\definecolor{bad}{HTML}{B91C1C}
+\definecolor{lav}{HTML}{7C3AED}
+\definecolor{soft}{HTML}{F1F5F9}
+\definecolor{softacc}{HTML}{E0E7FF}
+
+% ------------------------------------------------------------------ thème
+\setbeamertemplate{navigation symbols}{}
+\setbeamercolor{normal text}{fg=ink}
+\setbeamercolor{structure}{fg=acc}
+\setbeamertemplate{itemize item}{\color{acc}\raisebox{0.15ex}{\scriptsize$\blacksquare$}}
+\setbeamertemplate{itemize subitem}{\color{mute}\raisebox{0.2ex}{\tiny$\blacktriangleright$}}
+\setlength{\leftmargini}{1.1em}
+
+\newcommand{\tracker}{}
+\setbeamertemplate{frametitle}{%
+  \vspace{0.22cm}%
+  \begin{beamercolorbox}[wd=\paperwidth,leftskip=0.55cm,rightskip=0.55cm]{}%
+    {\fontsize{7}{8}\selectfont\color{acc}\bfseries\MakeUppercase{\tracker}}\par\vspace{0.06cm}%
+    {\rightskip=0.55cm plus 6em\hyphenpenalty=10000\exhyphenpenalty=10000\fontsize{12.5}{14.5}\selectfont\bfseries\color{navy}\insertframetitle\par}\vspace{0.08cm}%
+    {\color{line}\rule{\linewidth}{0.6pt}}%
+  \end{beamercolorbox}%
+}
+\newcommand{\pagelabel}{\insertframenumber\,/\,10}
+\setbeamertemplate{footline}{%
+  \begin{beamercolorbox}[wd=\paperwidth,ht=0.55cm,dp=0.2cm,leftskip=0.55cm,rightskip=0.55cm]{}%
+    {\fontsize{6.5}{7}\selectfont\color{mute}MPRO 2025--2026 \quad|\quad Projet SNCF : gestion des rames en gare --- Branch-and-Price, ALNS \& IA agentique\hfill\pagelabel}%
+  \end{beamercolorbox}%
+}
+\setbeamersize{text margin left=0.55cm,text margin right=0.55cm}
+
+% ------------------------------------------------------------------ outils
+\newcommand{\source}[1]{\par\vfill{\fontsize{6}{7}\selectfont\color{mute}Source : #1}}
+\newcommand{\takeaway}[1]{%
+  \par\smallskip\noindent\begin{tikzpicture}
+    \node[fill=softacc,draw=none,inner sep=3.5pt,text width=\dimexpr\linewidth-11pt\relax,align=left] (t) {\scriptsize\color{navy}\textbf{À retenir.} #1};
+    \fill[acc] (t.north west) rectangle ($(t.south west)+(3pt,0)$);
+  \end{tikzpicture}}
+\newcommand{\kpi}[3]{% valeur, libellé, couleur
+  \begin{tikzpicture}\node[fill=soft,inner sep=5pt,text width=2.55cm,align=left]{{\Large\bfseries\color{#3}#1}\\[-1pt]{\fontsize{6.5}{7.5}\selectfont\color{mute}#2}};\end{tikzpicture}}
+\newcommand{\kpiw}[4]{% valeur, libellé, couleur, largeur
+  \begin{tikzpicture}\node[fill=soft,inner sep=4pt,text width=#4,align=left]{{\large\bfseries\color{#3}#1}\;{\fontsize{6.5}{7.5}\selectfont\color{mute}#2}};\end{tikzpicture}}
+\newcommand{\shot}[2]{\tikz\node[inner sep=0pt,draw=line,line width=0.4pt]{\includegraphics[#1]{#2}};}
+\newcommand{\cbox}[3]{% titre, couleur, contenu
+  \begin{tikzpicture}\node[draw=#2!45,fill=#2!5,line width=0.5pt,rounded corners=2pt,inner sep=5pt,text width=\dimexpr\linewidth-12pt\relax,align=left]{{\footnotesize\bfseries\color{#2!85!black}#1}\\[2pt]\scriptsize #3};\end{tikzpicture}}
+\newcommand{\legende}[1]{{\fontsize{6}{7}\selectfont\color{mute}#1}}
+\newcommand{\B}{B\&P}
+
+\begin{document}
+
+% ===================================================================== 1
+\begin{frame}[plain]
+  \begin{tikzpicture}[remember picture,overlay]
+    \fill[navy] (current page.south west) rectangle (current page.north east);
+    \fill[acc] (current page.south west) rectangle ($(current page.south west)+(0.35,9.6)$);
+    \begin{scope}[shift={($(current page.south east)+(-5.4,0.9)$)},opacity=0.5]
+      \foreach \x in {0,...,6} \foreach \y in {0,...,4} \fill[white!70!navy] (\x*0.75,\y*0.65) circle (1.5pt);
+      \draw[acc2,line width=1.2pt,-{Latex[length=2mm]}] (0,0) -- (0.75,0.65) -- (1.5,0.65) -- (2.25,1.3) -- (3,1.3) -- (3.75,1.95) -- (4.5,1.95);
+      \draw[orange!80,line width=1.2pt,-{Latex[length=2mm]}] (0,2.6) -- (0.75,1.95) -- (1.5,1.95) -- (2.25,2.6) -- (3,2.6) -- (3.75,2.6);
+    \end{scope}
+  \end{tikzpicture}
+  \vspace*{1.2cm}
+  {\color{acc2}\fontsize{9}{11}\selectfont\bfseries PROJET SNCF · RECHERCHE OPÉRATIONNELLE}\par\vspace{0.35cm}
+  \begin{minipage}{10.8cm}\raggedright\hyphenpenalty=10000{\color{white}\fontsize{20}{24}\selectfont\bfseries Gestion des rames en gare : Branch-and-Price, ALNS et apport de l'IA agentique\par}\end{minipage}\par\vspace{0.4cm}
+  \begin{minipage}{8.6cm}\raggedright{\color{white!75!navy}\small Graphe espace-temps · génération de colonnes · une recherche à grands voisinages réparée par le pricing · une interface pour voir les solutions}\end{minipage}\par\vfill
+  {\color{white!80!navy}\footnotesize BACCAR Bedis \;·\; ESTEVE Erwann \;·\; VERBOIS Maël\\ Master Parisien de Recherche Opérationnelle (MPRO) --- CNAM, 2025--2026\\[2pt]}
+\end{frame}
+
+% ===================================================================== 2
+\renewcommand{\tracker}{Problème}
+\begin{frame}{Placer, router et entretenir chaque train pendant son séjour, ou le refuser}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.46\textwidth}
+    Chaque train $k$ arrive à $a_k$, repart à $d_k$, et doit recevoir des services $S_k$ (nettoyage, réparation, tour en fosse\ldots).\par\medskip
+    \textbf{Décisions}
+    \begin{itemize}\setlength\itemsep{1pt}
+      \item sur quelle voie le garer, et quand le déplacer (manœuvres) ;
+      \item où et quand faire chacun de ses services ;
+      \item ou le \textbf{refuser}, avec une pénalité.
+    \end{itemize}
+    \textbf{Contraintes} : au plus un train par voie à chaque instant ; chaque service requis fait une fois, sur une voie équipée ; départ à l'heure.\par\smallskip
+    \textbf{Objectif} : minimiser les coûts de manœuvre, de stationnement et de service, plus les pénalités de refus.
+    \column{0.51\textwidth}
+    \centering
+    \shot{width=\linewidth}{img/station_layout.jpg}\par
+    \legende{petite gare : entrées/sorties $\to$ aiguillages $\to$ 6 voies de garage $\to$ voies de service}\par\medskip
+    \scriptsize
+    \begin{tabular}{@{}lrrr@{}}
+      \toprule
+      Gare & voies & liens & trains (scénarios 1--5) \\
+      \midrule
+      small   & 24 & 41  & 8 -- 24 \\
+      medium  & 46 & 129 & 15 -- 55 \\
+      large   & 74 & 294 & 25 -- 105 \\
+      variant & 18 & 19  & 10 -- 26 \\
+      \bottomrule
+    \end{tabular}
+  \end{columns}
+  \takeaway{20 instances (4 gares × 5 scénarios), de 8 à 105 trains. Le refus est toujours possible : une solution réalisable existe toujours.}
+\end{frame}
+
+% ===================================================================== 3
+\renewcommand{\tracker}{Modélisation}
+\begin{frame}{Un graphe espace-temps : le planning d'un train devient un chemin}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.55\textwidth}
+    \centering
+    \begin{tikzpicture}[x=1.15cm,y=0.62cm,font=\scriptsize,
+        n/.style={circle,fill=mute!60,inner sep=1.4pt},
+        a/.style={-{Latex[length=1.6mm]},line width=0.8pt}]
+      \foreach \t in {0,...,5} {
+        \foreach \l/\yy in {0/5,1/4,2/3} \node[n] (p\l\t) at (\t,\yy) {};
+        \foreach \l/\yy in {0/1,1/0,2/-1} \node[n] (q\l\t) at (\t,\yy) {};
+        \node[mute] at (\t,-1.9) {$t_{\t}$};
+      }
+      \node[left=4pt,acc] at (p00) {voie $p$, couche 0};\node[left=4pt,acc] at (p10) {couche 1};\node[left=4pt,acc] at (p20) {couche 2};
+      \node[left=4pt,acc2] at (q00) {voie $q$, couche 0};\node[left=4pt,acc2] at (q10) {couche 1};\node[left=4pt,acc2] at (q20) {couche 2};
+      \draw[a,mute!80] (p00) -- node[above,font=\tiny]{attente} (p01); \draw[a,mute!80] (p01) -- (p02);
+      \draw[a,warn] (p11) -- node[above,sloped,pos=0.45]{manœuvre} (q12);
+      \draw[a,ok] (q12) to[bend right=10] node[below right=-1pt,pos=0.7]{service} (q04);
+      \draw[a,acc2] (p02) -- node[right=-1pt]{transfert} (p12);
+      \draw[a,lav] (p13) to[bend left=15] node[above,pos=0.6]{stockage} (p05);
+      \fill[bad!15,rounded corners=2pt] ($(q04)+(-0.15,-0.22)$) rectangle ($(q05)+(0.15,0.22)$);
+      \node[bad,font=\tiny] at ($(q04)!0.5!(q05)+(0,0.42)$) {occupe $(q,t)$};
+    \end{tikzpicture}
+    \column{0.43\textwidth}
+    \begin{itemize}\setlength\itemsep{3pt}
+      \item \textbf{Nœud} = (voie, instant, couche), avec un pas de temps $t_s=5$ ; couche 0 = à l'arrêt, couches 1--2 = en mouvement dans chaque sens.
+      \item \textbf{Arcs} : arrivée, manœuvre, service, stockage, attente, départ, et un arc fictif de \textbf{refus}.
+      \item Un \textbf{chemin} de la source au puits = le planning complet d'un train ; les services ne sont accessibles qu'aux trains qui les demandent.
+      \item Chaque arc porte la liste des \textbf{cellules (voie, instant)} qu'il occupe : c'est là, et seulement là, que les trains entrent en conflit.
+    \end{itemize}
+    \scriptsize\color{mute} petite gare, scénario 1 : 14\,043 arcs.
+  \end{columns}
+  \takeaway{Le problème devient : choisir un chemin par train, de façon à ce que deux chemins n'occupent jamais la même cellule.}
+\end{frame}
+
+% ===================================================================== 4
+\renewcommand{\tracker}{Méthode exacte · génération de colonnes}
+\begin{frame}{Génération de colonnes : on ne crée que les chemins utiles}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.47\textwidth}
+    \textbf{Problème maître} (une variable $\lambda_c$ par chemin $c$) :
+    \begin{align*}
+      \min\ & \textstyle\sum_{c} \gamma_c\,\lambda_c\\
+      \text{s.c.}\ & \textstyle\sum_{c\in\Omega_k}\lambda_c \ \ge 1 && \text{un chemin (ou refus) par train}\\
+      & \textstyle\sum_{c\in\Omega_k} a^{s}_{c}\lambda_c \ \ge 1 && \text{chaque service requis}\\
+      & \textstyle\sum_{c} b^{rt}_{c}\,\lambda_c \ \le 1 && \text{une cellule, un train}\\
+      & \lambda_c\in\{0,1\}
+    \end{align*}
+    \scriptsize Il existe des milliards de chemins : on résout le maître \textbf{restreint} à ceux déjà générés, en relaxation linéaire.
+    \column{0.5\textwidth}
+    \centering
+    \begin{tikzpicture}[font=\scriptsize,
+        bx/.style={draw=line,fill=soft,rounded corners=2pt,align=center,inner sep=4pt,text width=3.1cm},
+        ar/.style={-{Latex[length=2mm]},line width=0.9pt,acc}]
+      \node[bx] (m) {\textbf{\color{navy}Maître restreint (LP)}\\ choisit parmi les chemins connus};
+      \node[bx,below=0.9cm of m] (p) {\textbf{\color{navy}Pricing, train par train}\\ plus court chemin avec ressources (services faits) dans le graphe};
+      \draw[ar] (m.east) to[bend left=50] node[right,align=left]{prix duaux\\ (train, service,\\ cellule)} (p.east);
+      \draw[ar] (p.west) to[bend left=50] node[left,align=right]{chemins de\\ coût réduit $<0$} (m.west);
+      \node[below=0.1cm of p,text width=5.2cm,align=center,color=mute] {arrêt : plus aucun chemin améliorant};
+    \end{tikzpicture}\par\smallskip
+    \begin{tikzpicture}
+      \begin{axis}[width=\linewidth,height=2.4cm,font=\tiny,
+          xlabel={itération},ylabel={valeur du LP},
+          ymin=0,ymax=17000,scaled ticks=false,yticklabel style={/pgf/number format/1000 sep={\,}},
+          grid=major,grid style={line,opacity=0.5}]
+        \addplot[ok,thick,mark=*,mark size=1pt] table[x=it,y=rmp]{data/cg_root_s1.csv};
+        \addplot[mute,dashed] coordinates {(0,1959.5) (17,1959.5)};
+      \end{axis}
+    \end{tikzpicture}\par
+    \legende{petite gare, scénario 1 : de 16\,040 (tout refusé) à l'optimum du LP 1\,959,5 en 18 itérations}
+  \end{columns}
+  \takeaway{Le pricing est le cœur de la méthode : un plus court chemin dans le graphe, guidé par les prix duaux. L'ALNS réutilisera exactement cette brique.}
+\end{frame}
+
+% ===================================================================== 5
+\renewcommand{\tracker}{Méthode exacte · Branch-and-Price}
+\begin{frame}{Branch-and-Price : exact, mais lent sur les grandes gares}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.49\textwidth}
+    Si le LP est fractionnaire, on \textbf{branche} en interdisant des arcs à un train (le pricing reste exact) :
+    \begin{itemize}\setlength\itemsep{1pt}
+      \item \textbf{date d'un service} : le service $s$ du train $k$ commence avant ou après $t_0$, $t_0$ coupant son flot en deux ;
+      \item \textbf{divergence} : au premier point où les chemins du train se séparent, on répartit les arcs sortants en deux paquets équilibrés.
+    \end{itemize}
+    \textbf{Exploration} : meilleure borne d'abord. \textbf{Heuristiques primales} tous les 5 nœuds : plongée et MIP sur les colonnes générées.\par\smallskip
+    \kpiw{6 / 19}{instances sans solution \B\ (medium 3--5, large 2--4)}{bad}{\dimexpr\linewidth-8pt\relax}\par\smallskip
+    \kpiw{1\,043 s}{avant la 1\textsuperscript{re} solution \B\ sur small 5 (limite 1\,250 s)}{warn}{\dimexpr\linewidth-8pt\relax}
+    \column{0.48\textwidth}
+    \centering\shot{width=\linewidth}{img/bp_tree.jpg}\par
+    \legende{application, onglet « arbre » : l'arbre de branchement rejoué sur l'horloge du solveur (couleur = statut du nœud)}
+  \end{columns}
+  \takeaway{Le \B\ prouve l'optimalité quand la racine converge ; sur les grandes gares, le maître LP absorbe le temps et aucune solution n'est produite. D'où le besoin d'une méthode primale rapide.}
+  \source{benchmark de l'application, export du 18/11/2026 (Gurobi).}
+\end{frame}
+
+% ===================================================================== 6
+\renewcommand{\tracker}{IA agentique}
+\begin{frame}{Ce que l'IA agentique a apporté au projet}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.325\textwidth}
+    \cbox{1 · Comprendre et outiller}{acc}{Lecture du solveur C++ existant ; instrumentation (itérations, nœuds, bornes, solutions) ; \textbf{application de visualisation} (FastAPI, React/D3) construite d'après notre cahier des charges.}
+    \column{0.325\textwidth}
+    \cbox{2 · Théoriser l'ALNS}{ok}{ALNS réparée par le pricing, théorisée avec l'agent, qui l'a \textbf{rattachée à la littérature} (Ropke \& Pisinger 2006 ; Prescott-Gagnon \emph{et al.} 2009), a vérifié son adéquation au TUSP (mêmes chemins, mêmes duaux, borne réutilisable), puis l'a \textbf{implémentée} et réglée.}
+    \column{0.325\textwidth}
+    \cbox{3 · Mesurer et fiabiliser}{warn}{Benchmark \B\ / ALNS sur 19 instances ; analyse des traces pour expliquer les résultats surprenants ; corrections (bornes négatives, gap affiché à tort à 0\,\%) et une \textbf{erreur de modèle} révélée par l'interface.}
+  \end{columns}\par\smallskip
+  \begin{columns}[T,onlytextwidth]
+    \column{0.49\textwidth}
+    \begin{tikzpicture}\node[fill=soft,inner sep=6pt,text width=\dimexpr\linewidth-12pt\relax,align=left]{\footnotesize\bfseries\color{navy}Notre rôle\\[2pt]\scriptsize\mdseries\color{ink} fixer la direction, critiquer les propositions (trois options pour corriger le modèle, une retenue), valider la modélisation, lancer les campagnes sous Gurobi.};\end{tikzpicture}
+    \column{0.49\textwidth}
+    \begin{tikzpicture}\node[fill=soft,inner sep=6pt,text width=\dimexpr\linewidth-12pt\relax,align=left]{\footnotesize\bfseries\color{navy}Le rôle de l'agent\\[2pt]\scriptsize\mdseries\color{ink} relier aux méthodes connues, implémenter (C++, Python, TypeScript), tester, mesurer, justifier chaque choix par des chiffres.};\end{tikzpicture}
+  \end{columns}
+  \takeaway{L'agent a surtout raccourci la boucle idée $\to$ implémentation $\to$ mesure. Chaque résultat reste vérifié par un contrôle indépendant des solutions.}
+\end{frame}
+
+% ===================================================================== 7
+\renewcommand{\tracker}{IA agentique · interface}
+\begin{frame}{L'interface : voir les solutions, pas seulement les chiffres}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.49\textwidth}
+    \centering\shot{height=2.45cm}{img/sim_s4.jpg}\par
+    \raggedright\legende{\textbf{Simulation} de la gare de $t=0$ à $T$ : manœuvres, services en cours, journal des événements.}\par\smallskip
+    \centering\shot{height=1.75cm}{img/alns_panel.jpg}\par
+    \raggedright\legende{\textbf{Convergence de l'ALNS} : chaque candidat coloré par son issue, solution courante, meilleure solution.}
+    \column{0.49\textwidth}
+    \centering\shot{height=2.45cm}{img/side_maps.jpg}\par
+    \raggedright\legende{\textbf{\B\ et ALNS côte à côte} sur la même horloge : mêmes trains, mêmes couleurs.}\par\smallskip
+    \centering\shot{height=1.75cm}{img/bench_table.jpg}\par
+    \raggedright\legende{\textbf{Benchmark} : campagnes, meilleure solution par méthode, écart à la meilleure borne, export CSV.}
+  \end{columns}
+  \takeaway{Chaque solution affichée est re-vérifiée à partir des données (conflits, croisements), et les courbes se construisent en direct. L'interface est un outil de vérification : c'est en regardant une simulation que l'erreur de modèle a été trouvée (bonus).}
+\end{frame}
+
+% ===================================================================== 8
+\renewcommand{\tracker}{IA agentique · ALNS}
+\begin{frame}{L'ALNS : détruire une partie de la solution, la réparer avec le pricing}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.55\textwidth}
+    \centering
+    \begin{tikzpicture}[font=\scriptsize,
+        bx/.style={draw=line,fill=soft,rounded corners=2pt,align=left,inner sep=4pt,text width=4.9cm},
+        ar/.style={-{Latex[length=2mm]},line width=0.9pt,acc}]
+      \node[bx] (d) {\textbf{\color{navy}1 · Détruire} : libérer $k$ trains, les autres gardent leur chemin. 6 opérateurs (aléatoire, même créneau, mêmes voies, prix duaux, trains refusés, voies les plus disputées).};
+      \node[bx,below=0.3cm of d,draw=ok,fill=ok!6] (r) {\textbf{\color{ok!80!black}2 · Réparer avec le pricing} sur un \textbf{sous-maître réduit} (trains libres seulement, voies des trains fixés bloquées) :\\
+        -- glouton / regret : un appel au pricing par train, cellules occupées interdites ;\\
+        -- plongée (+ MIP) : génération de colonnes, puis fixations successives.};
+      \node[bx,below=0.3cm of r,draw=lav,fill=lav!6] (b) {\textbf{\color{lav}3 · Couper par la borne} : si la borne lagrangienne du voisinage $\ge$ coût courant $-1$ (coûts entiers), aucune amélioration n'est possible : on abandonne.};
+      \node[bx,below=0.3cm of b] (a) {\textbf{\color{navy}4 · Accepter} (recuit simulé) et \textbf{adapter} les poids des opérateurs selon leurs succès par seconde.};
+      \draw[ar] (d) -- (r); \draw[ar] (r) -- (b); \draw[ar] (b) -- (a);
+      \draw[ar] (a.west) -- ++(-0.35,0) |- (d.west);
+    \end{tikzpicture}
+    \column{0.42\textwidth}
+    \textbf{Pourquoi le pricing}
+    \begin{itemize}\setlength\itemsep{2pt}
+      \item Insérer un train = un plus court chemin où les cellules déjà prises sont interdites : le pricing renvoie le meilleur chemin \textbf{sans conflit}, ou le refus. Une solution complète en quelques millisecondes.
+      \item Mêmes chemins, mêmes prix duaux que le \B : les opérateurs « prix duaux » et « voies disputées » utilisent les duaux de la racine.
+      \item La borne du voisinage évite de dépenser du temps là où rien ne peut être gagné.
+    \end{itemize}\smallskip
+    \textbf{Références}\par
+    {\scriptsize Ropke \& Pisinger, \emph{Transportation Science} 40(4), 2006 : ALNS, poids adaptatifs.\\
+    Prescott-Gagnon, Desaulniers \& Rousseau, \emph{Networks} 54(4), 2009 : LNS réparée par Branch-and-Price.}
+  \end{columns}
+  \takeaway{L'ALNS n'est pas une heuristique à part : c'est le moteur du \B\ (pricing, sous-maître, borne) appliqué à des sous-problèmes que l'on sait résoudre vite.}
+\end{frame}
+
+% ===================================================================== 9
+\renewcommand{\tracker}{Résultats}
+\begin{frame}{Benchmark : l'ALNS trouve des solutions partout, et meilleures que le \B}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.62\textwidth}
+    \begin{tikzpicture}
+      \begin{axis}[ybar,width=\linewidth,height=4.4cm,bar width=3.2pt,font=\tiny,
+          symbolic x coords={S1,S2,S3,S4,S5,M1,M2,M3,M4,M5,L1,L2,L3,L4,V1,V2,V3,V4,V5},xtick={S1,S2,S3,S4,S5,M1,M2,M3,M4,M5,L1,L2,L3,L4,V1,V2,V3,V4,V5},
+          ymin=0,ymax=240,ylabel={écart à la meilleure borne (\%)},
+          legend style={font=\tiny,at={(0.02,0.98)},anchor=north west,draw=none,fill=white,fill opacity=0.85,legend columns=1},
+          axis lines*=left,ymajorgrids,grid style={line},unbounded coords=jump,enlarge x limits=0.04]
+        \addplot[fill=acc,draw=none] table[x=inst,y=bpgap]{data/results.csv};
+        \addplot[fill=ok,draw=none] table[x=inst,y=lnsgap]{data/results.csv};
+        \legend{Branch-and-Price,ALNS}
+        \node[bad,font=\tiny,anchor=south] at ([xshift=-1.7pt]axis cs:M3,0) {$\varnothing$};
+        \node[bad,font=\tiny,anchor=south] at ([xshift=-1.7pt]axis cs:M4,0) {$\varnothing$};
+        \node[bad,font=\tiny,anchor=south] at ([xshift=-1.7pt]axis cs:M5,0) {$\varnothing$};
+        \node[bad,font=\tiny,anchor=south] at ([xshift=-1.7pt]axis cs:L2,0) {$\varnothing$};
+        \node[bad,font=\tiny,anchor=south] at ([xshift=-1.7pt]axis cs:L3,0) {$\varnothing$};
+        \node[bad,font=\tiny,anchor=south] at ([xshift=-1.7pt]axis cs:L4,0) {$\varnothing$};
+      \end{axis}
+    \end{tikzpicture}\par
+    \legende{S = small, M = medium, L = large, V = variant ; $\varnothing$ = pas de solution \B. Écart = (solution $-$ meilleure borne connue) / borne.}
+    \column{0.36\textwidth}
+    \kpiw{10 -- 3 -- 0}{victoires ALNS, égalités, victoires \B\ (13 instances comparables)}{ok}{\dimexpr\linewidth-8pt\relax}\par\smallskip
+    \kpiw{< 0,8 s}{1\textsuperscript{re} solution ALNS partout (\B : 0,5 à 1\,043 s)}{acc}{\dimexpr\linewidth-8pt\relax}\par\smallskip
+    \kpiw{6}{instances où seule l'ALNS a une solution}{warn}{\dimexpr\linewidth-8pt\relax}\par\smallskip
+    \kpiw{$-$5 à $-$21\,\%}{coût ALNS vs \B\ sur small 2--5 et medium 2}{ok}{\dimexpr\linewidth-8pt\relax}
+  \end{columns}
+  \takeaway{Le \B\ prouve l'optimalité sur medium 1 et large 1 (l'ALNS l'y atteint aussi). Écarts élevés sur les grandes gares, surtout car la borne est faible. Durées pas toujours identiques : l'ALNS avait autant ou moins de temps pour 8 de ses 10 victoires.}
+  \source{\texttt{tusp\_bp\_vs\_lns\_202611181432.csv}, Gurobi, limites de 400 à 1\,250 s par run.}
+\end{frame}
+
+% ===================================================================== 10
+\renewcommand{\tracker}{Conclusion}
+\begin{frame}{Conclusion et perspectives}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.32\textwidth}
+    \cbox{Bilan}{ok}{
+      \begin{itemize}\setlength\itemsep{1pt}
+        \item un \B\ corrigé et observable : il prouve l'optimalité quand la racine converge (medium 1, large 1) ;
+        \item une ALNS fondée sur le pricing : une solution en moins d'une seconde, la meilleure sur 10 instances sur 13 ;
+        \item une interface qui a révélé une erreur de modèle invisible dans les chiffres.
+      \end{itemize}}
+    \column{0.32\textwidth}
+    \cbox{Limites}{warn}{
+      \begin{itemize}\setlength\itemsep{1pt}
+        \item écarts encore de 29 à 225\,\% sur les grandes gares : la borne de racine ne converge pas dans le temps ;
+        \item l'ALNS ne prouve rien seule ; ses résultats varient d'une graine à l'autre ;
+        \item durées de run différentes dans une partie du benchmark.
+      \end{itemize}}
+    \column{0.32\textwidth}
+    \cbox{Perspectives}{acc}{
+      \begin{itemize}\setlength\itemsep{1pt}
+        \item l'ALNS comme heuristique primale \emph{dans} le \B\ (solution initiale et borne supérieure pour élaguer) ;
+        \item strong branching, stabilisation des duaux ;
+        \item ALNS : plafonner la racine, réchauffer le recuit sur les plateaux, garder des opérateurs variés ;
+        \item benchmark à durée égale, plusieurs graines.
+      \end{itemize}}
+  \end{columns}\par\bigskip
+  \takeaway{Méthode exacte et heuristique partagent le même moteur (graphe, pricing, borne) : c'est ce qui a permis de construire l'ALNS vite, et ce qui permettra de les combiner.}
+\end{frame}
+
+% ===================================================================== bonus
+\renewcommand{\pagelabel}{Bonus}
+\renewcommand{\tracker}{Bonus · une erreur de modèle trouvée grâce à l'interface}
+\begin{frame}{Deux trains se croisaient sur la même voie : vu, mesuré, corrigé}
+  \small
+  \begin{columns}[T,onlytextwidth]
+    \column{0.32\textwidth}
+    {\footnotesize\bfseries\color{navy}1 · Observé dans la simulation}\par\smallskip
+    \shot{width=0.85\linewidth}{img/user_crossing.jpg}\par
+    {\scriptsize T3 et T11 avancent l'un vers l'autre sur les deux extrémités d'une même voie, au même pas de temps.}\par\medskip
+    {\footnotesize\bfseries\color{navy}2 · Pourquoi le modèle l'autorisait}\par\smallskip
+    \tiny
+    \begin{tabular}{@{}l@{\hspace{5pt}}c@{\hspace{5pt}}c@{}}
+      \toprule
+      & pas $t$ & pas $t{+}d$ \\
+      \midrule
+      A : $p\to q$ & $(p,t)$ & $(q,t{+}d)$ \\
+      B : $q\to p$ & $(q,t)$ & $(p,t{+}d)$ \\
+      lien $p$--$q$ & \multicolumn{2}{c}{\color{bad}\bfseries jamais occupé} \\
+      \bottomrule
+    \end{tabular}\par\smallskip
+    {\scriptsize Une manœuvre n'occupait que sa voie de départ : aucune cellule commune, l'échange était « réalisable ». Ici $d = t_s = 5$.}
+    \column{0.64\textwidth}
+    {\footnotesize\bfseries\color{navy}3 · Mesuré : le vérificateur de l'application signale chaque croisement}\par\smallskip
+    \centering\shot{height=1.9cm}{img/crossing_alert.jpg}\par
+    \raggedright\legende{solution Gurobi de small 4 (modèle d'origine) à $t=137$ : deux croisements dans le même pas de temps.}\par\smallskip
+    {\footnotesize\bfseries\color{navy}4 · Corrigé : une ressource par lien}\par
+    \scriptsize Chaque lien $\ell=\{p,q\}$ devient une ressource de capacité 1 à chaque instant, \textbf{dans les deux sens}, occupée pendant toute la manœuvre :
+    \vspace{-3pt}
+    \[ \textstyle\sum_{c} b^{\ell\tau}_c\,\lambda_c \le 1 \qquad \forall \ell,\ \forall \tau \]
+    \vspace{-8pt}
+    \begin{columns}[T,onlytextwidth]
+      \column{0.33\linewidth}\kpiw{89 $\to$ 0}{croisements (10 solutions d'origine / après)}{ok}{\dimexpr\linewidth-8pt\relax}
+      \column{0.33\linewidth}\kpiw{0}{écart sur 66\,548 coûts réduits : pricing exact}{ok}{\dimexpr\linewidth-8pt\relax}
+      \column{0.33\linewidth}\kpiw{=}{borne de racine inchangée (petites instances)}{acc}{\dimexpr\linewidth-8pt\relax}
+    \end{columns}
+  \end{columns}
+  \takeaway{Invisible dans tous les indicateurs (objectif, gap, faisabilité), évidente en deux secondes d'animation. La correction ne touche que la construction du graphe.}
+\end{frame}
+
+\end{document}

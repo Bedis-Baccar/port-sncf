@@ -1,4 +1,4 @@
-# Présentation : Branch-and-Price, ALNS et apport de l'IA agentique (10 slides + bonus)
+# Présentation : Branch-and-Price, ALNS et apport de l'IA agentique (10 slides + bonus, thème metropolis)
 
 `main.pdf` est la présentation compilée, `main.tex` sa source Beamer.
 

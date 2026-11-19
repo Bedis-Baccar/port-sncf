@@ -35,7 +35,7 @@
 \newcommand{\nosol}{\textcolor{bad}{aucune solution}}
 \newcommand{\legende}[1]{{\scriptsize\color{mute}#1}}
 \newcommand{\shot}[2]{\tikz\node[inner sep=0pt,draw=line,line width=0.4pt]{\includegraphics[#1]{#2}};}
-\newcommand{\chiffre}[2]{{\Large\bfseries\color{acc}#1}\\[-1pt]{\scriptsize #2}}
+\newcommand{\chiffre}[2]{{\Large\bfseries\color{acc}#1}\\[3pt]{\scriptsize\linespread{1}\selectfont #2\par}}
 
 \title{Gestion des rames en gare}
 \subtitle{Branch-and-Price, ALNS et apport de l'IA agentique}
@@ -285,42 +285,52 @@
 % ===================================================================== 9
 \begin{frame}{Résultats du benchmark}
   \begin{columns}[T,onlytextwidth]
-    \column{0.62\textwidth}
+    \column{0.56\textwidth}
+    {\footnotesize\bfseries Écart par instance}\\
     \begin{tikzpicture}
-      \begin{axis}[ybar,width=\linewidth,height=5cm,bar width=3.2pt,font=\tiny,
+      \begin{axis}[ybar,width=\linewidth,height=4.3cm,bar width=2.8pt,font=\tiny,
           symbolic x coords={S1,S2,S3,S4,S5,M1,M2,M3,M4,M5,L1,L2,L3,L4,V1,V2,V3,V4,V5},
           xtick={S1,S2,S3,S4,S5,M1,M2,M3,M4,M5,L1,L2,L3,L4,V1,V2,V3,V4,V5},
           ymin=0,ymax=240,ylabel={écart à la meilleure borne (\%)},
-          legend style={font=\tiny,at={(0.02,0.98)},anchor=north west,draw=none,fill=white,fill opacity=0.85},
+          legend style={font=\tiny,at={(0.5,1.02)},anchor=south,draw=none,fill=none,legend columns=2,/tikz/every even column/.append style={column sep=6pt}},
+          area legend,
           axis lines*=left,ymajorgrids,grid style={line},unbounded coords=jump,enlarge x limits=0.04]
         \addplot[fill=acc,draw=none] table[x=inst,y=bpgap]{data/results.csv};
         \addplot[fill=ok,draw=none] table[x=inst,y=lnsgap]{data/results.csv};
         \legend{Branch-and-Price,ALNS}
-        \node[bad,anchor=south] at ([xshift=-1.7pt]axis cs:M3,0) {$\varnothing$};
-        \node[bad,anchor=south] at ([xshift=-1.7pt]axis cs:M4,0) {$\varnothing$};
-        \node[bad,anchor=south] at ([xshift=-1.7pt]axis cs:M5,0) {$\varnothing$};
-        \node[bad,anchor=south] at ([xshift=-1.7pt]axis cs:L2,0) {$\varnothing$};
-        \node[bad,anchor=south] at ([xshift=-1.7pt]axis cs:L3,0) {$\varnothing$};
-        \node[bad,anchor=south] at ([xshift=-1.7pt]axis cs:L4,0) {$\varnothing$};
+        \node[bad,anchor=south] at ([xshift=-1.5pt]axis cs:M3,0) {$\varnothing$};
+        \node[bad,anchor=south] at ([xshift=-1.5pt]axis cs:M4,0) {$\varnothing$};
+        \node[bad,anchor=south] at ([xshift=-1.5pt]axis cs:M5,0) {$\varnothing$};
+        \node[bad,anchor=south] at ([xshift=-1.5pt]axis cs:L2,0) {$\varnothing$};
+        \node[bad,anchor=south] at ([xshift=-1.5pt]axis cs:L3,0) {$\varnothing$};
+        \node[bad,anchor=south] at ([xshift=-1.5pt]axis cs:L4,0) {$\varnothing$};
       \end{axis}
     \end{tikzpicture}\\
-    \legende{S/M/L/V = small, medium, large, variant ; $\varnothing$ = pas de solution \B.\\
-    Écart = (solution $-$ meilleure borne connue) / borne. Gurobi, export du 18/11/2026.}
-    \column{0.35\textwidth}
-    \chiffre{10 -- 3 -- 0}{victoires ALNS / égalités / victoires \B}
-    \medskip
-
-    \chiffre{< 0,8 s}{1\textsuperscript{re} solution ALNS partout (\B : jusqu'à 1\,043 s)}
-    \medskip
-
-    \chiffre{6}{instances où seule l'ALNS a une solution}
-    \medskip
-
-    \chiffre{$-$5 à $-$21\,\%}{coût ALNS vs \B\ (small 2--5, medium 2)}
+    \legende{$\varnothing$ = pas de solution \B}
+    \column{0.42\textwidth}
+    {\footnotesize\bfseries Écart selon la taille de l'instance}\\
+    \begin{tikzpicture}
+      \begin{axis}[width=\linewidth,height=4.3cm,font=\tiny,
+          xmin=0,xmax=100,ymin=0,ymax=240,xlabel={nombre de trains},
+          legend style={font=\tiny,at={(0.5,1.02)},anchor=south,draw=none,fill=none,legend columns=2,/tikz/every even column/.append style={column sep=6pt}},
+          axis lines*=left,grid=major,grid style={line},unbounded coords=jump]
+        \addplot[only marks,mark=*,mark size=2pt,acc,fill opacity=0.75] table[x=trains,y=bpgap]{data/scatter.csv};
+        \addplot[only marks,mark=diamond*,mark size=2.6pt,ok,fill opacity=0.75] table[x=trains,y=lnsgap]{data/scatter.csv};
+        \legend{Branch-and-Price,ALNS}
+      \end{axis}
+    \end{tikzpicture}\\
+    \legende{au-delà de 26 trains, seule l'ALNS a des solutions}
   \end{columns}
-  \medskip
+  \bigskip
 
-  \footnotesize Le \B\ prouve l'optimalité sur medium 1 et large 1. Durées pas toujours identiques : l'ALNS avait autant ou moins de temps pour 8 de ses 10 victoires.
+  \begin{columns}[T,onlytextwidth]
+    \column{0.24\textwidth}\chiffre{10 -- 3 -- 0}{victoires ALNS / égalités / victoires \B}
+    \column{0.24\textwidth}\chiffre{< 0,8 s}{1\textsuperscript{re} solution ALNS partout (\B : jusqu'à 1\,043 s)}
+    \column{0.24\textwidth}\chiffre{6}{instances où seule l'ALNS a une solution}
+    \column{0.24\textwidth}\chiffre{$-$5 à $-$21\,\%}{coût ALNS vs \B\ (small 2--5, medium 2)}
+  \end{columns}
+  \vfill
+  {\scriptsize\mdseries\color{mute} Écart à la meilleure borne connue (0\,\% = optimum prouvé). Gurobi, runs de 400 à 1\,250 s.}
 \end{frame}
 
 % ===================================================================== 10

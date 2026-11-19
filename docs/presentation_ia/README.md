@@ -8,8 +8,8 @@ Compilation (TeX Live avec beamer, pgfplots, tikz) :
 pdflatex main.tex && pdflatex main.tex
 ```
 
-- Le tableau des résultats (slide 8) reprend l'export du benchmark de l'application
-  (`tusp_bp_vs_lns_202611181432.csv`, Gurobi).
+- `data/results.csv` : écarts à la meilleure borne connue par instance, extraits de l'export du
+  benchmark de l'application (`tusp_bp_vs_lns_202611181432.csv`, Gurobi).
 - `data/cg_root_s1.csv` : génération de colonnes à la racine, petite gare, scénario 1.
 - `data/crossings.csv` : croisements dans les solutions du modèle d'origine.
 - `img/` : captures de l'application.

@@ -31,6 +31,8 @@
 
 \newcommand{\B}{B\&P}
 \newcommand{\pc}{\%}
+\newcommand{\win}[1]{\textcolor{ok}{\textbf{#1}}}
+\newcommand{\nosol}{\textcolor{bad}{aucune solution}}
 \newcommand{\legende}[1]{{\scriptsize\color{mute}#1}}
 \newcommand{\shot}[2]{\tikz\node[inner sep=0pt,draw=line,line width=0.4pt]{\includegraphics[#1]{#2}};}
 \newcommand{\chiffre}[2]{{\Large\bfseries\color{acc}#1}\\[-1pt]{\scriptsize #2}}
@@ -281,40 +283,42 @@
 \end{frame}
 
 % ===================================================================== 9
-\begin{frame}{Résultats du benchmark : l'ALNS fait mieux que le B\&P}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.58\textwidth}
-    {\small\bfseries Coût de la solution ALNS par rapport au \B}\\[-2pt]
-    {\scriptsize\color{mute} 13 instances où les deux méthodes ont une solution}\\[2pt]
-    \begin{tikzpicture}
-      \begin{axis}[xbar, width=\linewidth, height=6.1cm, bar width=6pt,
-          font=\scriptsize,
-          symbolic y coords={large 1,medium 1,small 1,variant 1,variant 4,variant 3,small 5,variant 2,variant 5,medium 2,small 4,small 3,small 2},
-          ytick=data, y tick label style={font=\scriptsize},
-          xmin=0, xmax=29, xtick=\empty, axis x line=none,
-          axis y line*=left, y axis line style={draw=none}, major y tick style={draw=none},
-          enlarge y limits=0.05,
-          point meta=explicit symbolic,
-          nodes near coords,
-          every node near coord/.append style={font=\scriptsize\bfseries, color=ok!80!black, anchor=west, xshift=1pt}]
-        \addplot[fill=ok!75, draw=none] table[col sep=semicolon, y=name, x=delta, meta=lab]{data/results_rel.csv};
-      \end{axis}
-    \end{tikzpicture}\\
-    \legende{$-$21,3\,\% : la solution ALNS coûte 21,3\,\% de moins que celle du \B.}
-    \column{0.39\textwidth}
-    \begin{alertblock}{Seule l'ALNS trouve une solution}
-      \footnotesize
-      medium 3, 4, 5 et large 2, 3, 4 : le \B\ n'a produit aucune solution dans le temps imparti.
-    \end{alertblock}
-    \medskip
-
-    \chiffre{< 0,8 s}{1\textsuperscript{re} solution ALNS, partout\\ (\B : jusqu'à 1\,043 s)}
-    \medskip
-
-    \chiffre{10 / 13}{instances où l'ALNS est meilleure ; 3 égalités}
-  \end{columns}
-  \vfill
-  {\scriptsize\mdseries\color{mute} Gurobi, export du 18/11/2026. Optimum prouvé sur medium 1 et large 1. Durées pas toujours identiques : l'ALNS avait autant ou moins de temps que le \B\ pour 8 de ses 10 victoires.}
+\begin{frame}{Résultats du benchmark : B\&P et ALNS côte à côte}
+  \centering
+  \scriptsize
+  \renewcommand{\arraystretch}{0.86}
+  \begin{tabular}{l rrr rrr l}
+    \toprule
+    & \multicolumn{3}{c}{\textbf{Branch-and-Price}} & \multicolumn{3}{c}{\textbf{ALNS}} & \\
+    \cmidrule(lr){2-4}\cmidrule(lr){5-7}
+    Instance & coût & écart & 1\textsuperscript{re} sol. & coût & écart & 1\textsuperscript{re} sol. & meilleure \\
+    \midrule
+      small 1 & 1\,974 & 0,5\,\% & 0,50 s & 1\,974 & 0,5\,\% & < 0,01 s & égalité \\
+      small 2 & 12\,457 & 115,6\,\% & 26 s & \win{9\,803} & 69,7\,\% & 0,01 s & \textcolor{ok}{ALNS} \\
+      small 3 & 35\,647 & 73,6\,\% & 131 s & \win{28\,662} & 39,5\,\% & 0,02 s & \textcolor{ok}{ALNS} \\
+      small 4 & 43\,416 & 56,3\,\% & 142 s & \win{36\,413} & 31,1\,\% & 0,01 s & \textcolor{ok}{ALNS} \\
+      small 5 & 80\,500 & 26,1\,\% & 1\,044 s & \win{76\,255} & 19,5\,\% & 0,05 s & \textcolor{ok}{ALNS} \\
+      \midrule
+      medium 1 & 3\,974 & 0,0\,\% & 9,53 s & 3\,974 & 0,0\,\% & 0,01 s & égalité \\
+      medium 2 & 18\,715 & 75,0\,\% & 219 s & \win{16\,053} & 50,1\,\% & 0,02 s & \textcolor{ok}{ALNS} \\
+      medium 3 & \multicolumn{3}{c}{\nosol} & \win{35\,852} & 55,4\,\% & 0,08 s & \textcolor{ok}{ALNS seule} \\
+      medium 4 & \multicolumn{3}{c}{\nosol} & \win{101\,814} & 26,3\,\% & 0,33 s & \textcolor{ok}{ALNS seule} \\
+      medium 5 & \multicolumn{3}{c}{\nosol} & \win{182\,983} & 58,3\,\% & 0,54 s & \textcolor{ok}{ALNS seule} \\
+      \midrule
+      large 1 & 7\,264 & 0,0\,\% & 24 s & 7\,264 & 0,0\,\% & 0,03 s & égalité \\
+      large 2 & \multicolumn{3}{c}{\nosol} & \win{26\,139} & 28,7\,\% & 0,15 s & \textcolor{ok}{ALNS seule} \\
+      large 3 & \multicolumn{3}{c}{\nosol} & \win{79\,313} & 150,2\,\% & 0,45 s & \textcolor{ok}{ALNS seule} \\
+      large 4 & \multicolumn{3}{c}{\nosol} & \win{220\,636} & 225,1\,\% & 0,77 s & \textcolor{ok}{ALNS seule} \\
+      \midrule
+      variant 1 & 2\,475 & 3,8\,\% & 1,30 s & \win{2\,471} & 3,7\,\% & < 0,01 s & \textcolor{ok}{ALNS} \\
+      variant 2 & 12\,078 & 101,6\,\% & 39 s & \win{11\,338} & 89,2\,\% & 0,01 s & \textcolor{ok}{ALNS} \\
+      variant 3 & 28\,787 & 21,7\,\% & 28 s & \win{28\,624} & 21,1\,\% & 0,03 s & \textcolor{ok}{ALNS} \\
+      variant 4 & 53\,119 & 12,9\,\% & 714 s & \win{52\,998} & 12,6\,\% & 0,14 s & \textcolor{ok}{ALNS} \\
+      variant 5 & 84\,923 & 15,7\,\% & 163 s & \win{79\,501} & 8,3\,\% & 0,31 s & \textcolor{ok}{ALNS} \\
+    \bottomrule
+  \end{tabular}\\[3pt]
+  \raggedright
+  {\scriptsize\mdseries\color{mute} En vert : la moins chère. Écart à la meilleure borne connue (0\,\% = optimum prouvé). Gurobi, runs de 400 à 1\,250 s.}
 \end{frame}
 
 % ===================================================================== 10
